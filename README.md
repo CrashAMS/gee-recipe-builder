@@ -106,4 +106,4 @@ like to contribute code, please open an issue first so we can align on scope.
 
 ## License
 
-[MIT](LICENSE) © Álvaro Morales
+[MIT](LICENSE) © Álvaro Morales Serradell
