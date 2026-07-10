@@ -18,6 +18,11 @@ remote sensing.
 > still road ahead. The core works end-to-end; some features are still in
 > progress (see [Status](#status)).
 
+![gee-recipe-builder — index-first form, live JS/Python script, and NDVI preview on the map](docs/screenshot.png)
+
+*Building an NDVI recipe over a drawn area: pick the index and sensor, the
+Earth Engine script updates live, and the computed index renders on the map.*
+
 ---
 
 ## What it does
