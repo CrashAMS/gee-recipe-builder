@@ -1,0 +1,36 @@
+[project]
+name = "gee-recipe-builder"
+version = "0.1.0"
+description = "Constructor de recetas de índices espectrales para Google Earth Engine"
+requires-python = ">=3.11"
+dependencies = [
+    "geopandas>=0.14",
+    "shapely>=2.0",
+    "pyproj>=3.6",
+    "pyogrio>=0.7",
+    # --- F2: runtime GEE (pins exactos, [decisión #5]) ---
+    "earthengine-api==1.7.34",
+    "eemont==2025.7.1",
+    "ee_extra==2025.7.2",
+    "requests==2.34.2",
+    # --- F3a: UI (Essentials, NO PySide6 completo — Addons/WebEngine entran en F3b) ---
+    "PySide6-Essentials>=6.7",
+    # --- F3b: mapa interactivo — QtWebEngineWidgets + QtWebChannel (import lazy en widget_mapa.py/preview.py) ---
+    "PySide6-Addons>=6.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-qt>=4.4",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]

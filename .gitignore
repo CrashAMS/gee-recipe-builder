@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.Python
+
+# Earth Engine / credenciales (NUNCA commitear)
+*.json.credentials
+.config/earthengine/
+credentials
+*credentials*.json
+
+# Datos descargados / salidas
+*.tif
+*.tiff
+*.png
+!docs/**/*.png
+downloads/
+outputs/
+
+# Internal AI-workflow scaffolding (not part of the product)
+.claude/
+ai-control-center/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Tests / coverage
+.pytest_cache/
+.coverage
+htmlcov/
