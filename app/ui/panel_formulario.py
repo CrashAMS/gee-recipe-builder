@@ -18,10 +18,10 @@ COMPOSICIONES = [
     ("Mediana", "median"), ("Media", "mean"), ("Mínimo", "min"),
     ("Máximo", "max"), ("Mosaico (más reciente)", "mosaic"),
 ]
-SALIDAS = [  # (etiqueta, valor, habilitada_en_F3a) — valores = Salida.*.value de F1 ("descarga", no "disco")
+SALIDAS = [  # (etiqueta, valor, habilitada) — valores = Salida.*.value de F1 ("descarga", no "disco")
     ("Descarga a disco", "descarga", True),
-    ("Drive / Cloud (F4)", "drive", False),
-    ("Preview en mapa (F3b)", "preview", False),
+    ("Drive / Cloud (F4)", "drive", True),
+    ("Preview en mapa (F3b)", "preview", True),
 ]
 
 

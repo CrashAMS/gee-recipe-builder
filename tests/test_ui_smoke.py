@@ -53,6 +53,26 @@ def test_mascara_se_deshabilita_si_sensor_no_la_soporta(ventana, monkeypatch):
     assert not ventana.form.chk_mascara.isChecked()
 
 
+def test_ejecutar_con_salida_preview_dispara_worker_preview(ventana, qtbot, monkeypatch):
+    # FIX-5: "Salida: Preview en mapa" ahora está habilitada en el combo (antes
+    # deshabilitada, panel_formulario.py) y _ejecutar debe rutear a
+    # _lanzar_preview en vez del flujo de descarga a disco.
+    from app.gee import config
+
+    monkeypatch.setattr(config, "hay_project_configurado", lambda: True)
+    lanzados = []
+    monkeypatch.setattr(ventana.pool, "start", lambda w: lanzados.append(w))
+    ventana.form.selector_aoi.tipo.setCurrentIndex(2)
+    for k, val in [("oeste", -59.0), ("sur", -35.0), ("este", -58.0), ("norte", -34.0)]:
+        ventana.form.selector_aoi._bbox[k].setValue(val)
+    idx_preview = ventana.form.combo_salida.findData("preview")
+    assert idx_preview != -1, "el ítem 'preview' debe estar habilitado y seleccionable"
+    ventana.form.combo_salida.setCurrentIndex(idx_preview)
+    ventana._ejecutar()
+    assert len(lanzados) == 1
+    assert isinstance(lanzados[0], workers.WorkerPreview)
+
+
 def test_boton_ejecutar_usa_worker_sin_tocar_gee(ventana, qtbot, monkeypatch, tmp_path):
     # Mockear el diálogo de guardado y el pool para no tocar GEE ni el filesystem real.
     from PySide6.QtWidgets import QFileDialog

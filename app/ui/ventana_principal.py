@@ -11,11 +11,13 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QThreadPool, QTimer
 
 from app.dominio.compilador import dialecto_js, dialecto_python
-from app.gee import auth, config, ejecutor
-from app.mapa.widget_mapa import WidgetMapa, refrescar_preview
+from app.dominio.receta import Salida
+from app.gee import config
+from app.mapa.widget_mapa import WidgetMapa
+from app.ui.dialogos.dialogo_export import DialogoExportDrive
 from app.ui.panel_formulario import PanelFormulario
 from app.ui.visor_script import VisorScript
-from app.ui.workers import WorkerDescarga, solicitud_desde_receta
+from app.ui.workers import WorkerConstruirImagenExport, WorkerDescarga, WorkerPreview
 
 # Debounce del auto-refresh de preview al cambiar la receta (decisión #6 F3b):
 # regenerar mapid en cada cambio, pero sin saturar GEE en cada tecla/spin.
@@ -28,6 +30,10 @@ class VentanaPrincipal(QMainWindow):
         self.setWindowTitle("GEE Recipe Builder")
         self.resize(1200, 800)
         self.pool = QThreadPool.globalInstance()
+        # Recetas en vuelo, para reusar sin recomputar si el camino Drive se
+        # ofrece desde el aviso de límite (DEC-2 de F0) o se elige del combo.
+        self._receta_en_curso: object | None = None
+        self._receta_export_en_curso: object | None = None
 
         # --- Zona formulario (con scroll) ---
         self.form = PanelFormulario()
@@ -85,11 +91,9 @@ class VentanaPrincipal(QMainWindow):
 
         # --- Wiring preview (F3b): auto-refresh debounced en cada cambio de receta
         # (decisión #6, evita regenerar el mapid en cada tecla) + botón manual ---
-        self._preview_thread = None  # guardar ref viva, si no el GC mata el QThread
-        self._preview_en_curso = False  # evita pisar self._preview_thread con un QThread
-        # todavía corriendo (auto-refresh + botón manual solapados) — Qt aborta el
-        # proceso si se destruye un QThread vivo ("QThread: Destroyed while thread
-        # is still running", Qt6Core.dll fatal).
+        # `_preview_en_curso` evita lanzar previews solapados: WorkerPreview corre en el
+        # pool y `finalizado` lo baja siempre (éxito o error), así el flag nunca se traba.
+        self._preview_en_curso = False
         self._debounce_preview = QTimer(self)
         self._debounce_preview.setSingleShot(True)
         self._debounce_preview.setInterval(_DEBOUNCE_PREVIEW_MS)
@@ -132,10 +136,26 @@ class VentanaPrincipal(QMainWindow):
             if not ok or not pid.strip():
                 return
             config.guardar_project(pid.strip())
+
+        if receta.salida is Salida.DRIVE:
+            # Camino directo (F4): el usuario eligió "Drive / Cloud" en el combo.
+            self._lanzar_construccion_export(receta)
+            return
+
+        if receta.salida is Salida.PREVIEW:
+            # FIX-5 (mini-roadmap post-audit de cierre): el combo "Salida" ya
+            # ofrecía "Preview en mapa" pero el botón Ejecutar seguía yendo
+            # por el flujo de descarga a disco. Reusa el mismo camino que el
+            # botón "Refrescar preview" del panel de mapa (F3b) — misma receta,
+            # mismo WorkerPreview, mismo feedback en `lbl_preview`.
+            self._lanzar_preview(interactivo=True)
+            return
+
         destino, _ = QFileDialog.getSaveFileName(self, "Guardar GeoTIFF", "salida.tif",
                                                  "GeoTIFF (*.tif)")
         if not destino:
             return
+        self._receta_en_curso = receta   # DEC-2 F0: si excede el límite, F4 reusa esta receta
         self.btn_ejecutar.setEnabled(False)
         self.btn_ejecutar.setText("Descargando…")
         worker = WorkerDescarga(receta, Path(destino))
@@ -148,11 +168,45 @@ class VentanaPrincipal(QMainWindow):
         QMessageBox.information(self, "Listo", f"Imagen descargada en:\n{ruta}")
 
     def _on_error(self, tipo: str, mensaje: str) -> None:
+        if tipo == "DescargaExcedeLimite":
+            # DEC-2 de F0: en vez de un error crudo, ofrecer el camino Drive de
+            # F4 con la MISMA receta (F2 clasificó el límite de 32MB/10000px).
+            respuesta = QMessageBox.question(
+                self, "Descarga excede el límite",
+                f"{mensaje}\n\n¿Exportar a Google Drive en su lugar?",
+            )
+            if respuesta == QMessageBox.StandardButton.Yes and self._receta_en_curso is not None:
+                self._lanzar_construccion_export(self._receta_en_curso)
+            return
         QMessageBox.critical(self, f"Error ({tipo})", mensaje)
 
     def _on_fin(self) -> None:
         self.btn_ejecutar.setEnabled(True)
         self.btn_ejecutar.setText("Ejecutalo por mí (descarga a disco)")
+
+    # ---- camino Drive/Cloud (F4) ----
+    def _lanzar_construccion_export(self, receta) -> None:
+        """Construye la ee.Image de `receta` (sin descargarla) y abre el diálogo
+        de export a Drive/Cloud Storage con esa imagen (DEC-2 de F0)."""
+        self.btn_ejecutar.setEnabled(False)
+        self.btn_ejecutar.setText("Preparando export…")
+        self._receta_export_en_curso = receta
+        worker = WorkerConstruirImagenExport(receta)
+        worker.senales.terminado.connect(self._on_imagen_export_lista)
+        worker.senales.error.connect(self._on_error_export)
+        worker.senales.finalizado.connect(self._on_fin)
+        self.pool.start(worker)
+
+    def _on_imagen_export_lista(self, payload) -> None:
+        imagen, region = payload
+        receta = self._receta_export_en_curso
+        nombre = f"{receta.indice}_{receta.fecha_inicio}_{receta.fecha_fin}"
+        dlg = DialogoExportDrive(imagen, region, sugerencia_nombre=nombre,
+                                 scale=receta.escala, parent=self)
+        dlg.exec()
+
+    def _on_error_export(self, tipo: str, mensaje: str) -> None:
+        QMessageBox.critical(self, f"Error al preparar el export ({tipo})", mensaje)
 
     def _lanzar_preview(self, interactivo: bool) -> None:
         """Construye la ee.Image de la receta actual y refresca el tile de preview en el mapa.
@@ -160,15 +214,11 @@ class VentanaPrincipal(QMainWindow):
         debounced (`interactivo=False`) se salta en silencio si todavía no hay project
         configurado, para no interrumpir al usuario mientras completa el formulario.
 
-        Si ya hay un refresh en vuelo, se ignora el pedido nuevo — lanzar uno superpuesto
-        pisaría `self._preview_thread` con el QThread anterior todavía corriendo, y Qt
-        aborta el proceso al destruirlo vivo. El próximo cambio de receta (debounce) o
-        click manual dispara el refresh pendiente una vez que el actual termina.
-
-        `auth.asegurar_sesion` + el adapter + `construir_imagen` + `getMapId` corren
-        TODOS dentro del mismo QThread (via `construir_imagen_para_preview`, ejecutado
-        por PreviewWorker) — partir la sesión GEE entre dos hilos distintos cuelga
-        `getMapId` indefinidamente (visto en vivo: 0% CPU, sin excepción, sin volver)."""
+        Si ya hay un refresh en vuelo, se ignora el pedido nuevo. El pipeline corre en
+        `WorkerPreview` (QThreadPool + señales, mismo patrón robusto que la descarga):
+        `finalizado` se emite SIEMPRE (éxito o error), así el botón nunca queda colgado
+        en "Generando…". Todo el pipeline GEE (auth + imagen + stretch + getMapId) va en
+        ese único hilo — partirlo entre dos hilos cuelga getMapId (visto en vivo)."""
         if self._preview_en_curso:
             return
         receta = self.form.receta_actual()
@@ -188,27 +238,23 @@ class VentanaPrincipal(QMainWindow):
                 return
             config.guardar_project(pid.strip())
 
-        def construir_imagen_para_preview():
-            auth.asegurar_sesion()
-            sol = solicitud_desde_receta(receta)
-            return ejecutor.construir_imagen(sol)
-
         self._preview_en_curso = True
         self.btn_preview.setEnabled(False)
         self.btn_preview.setText("Generando preview…")
         self.lbl_preview.setText("Generando preview… (calculando en GEE, puede tardar unos segundos)")
-        self._preview_thread = refrescar_preview(
-            self._mapa, construir_imagen_para_preview,
-            on_ok=self._on_preview_ok, on_error=self._on_preview_error,
-        )
-        self._preview_thread.finished.connect(self._on_preview_fin)
+        worker = WorkerPreview(receta)
+        worker.senales.terminado.connect(self._on_preview_ok)
+        worker.senales.error.connect(self._on_preview_error)
+        worker.senales.finalizado.connect(self._on_preview_fin)
+        self.pool.start(worker)
 
-    def _on_preview_ok(self, url_format: str) -> None:
+    def _on_preview_ok(self, url_format) -> None:
+        self._mapa.cargar_preview(url_format)
         self.lbl_preview.setText("Preview cargado ✓ — el índice se pintó sobre el mapa.")
 
-    def _on_preview_error(self, mensaje: str) -> None:
-        self.lbl_preview.setText("Error al generar el preview (ver detalle).")
-        QMessageBox.critical(self, "Error al generar el preview", mensaje)
+    def _on_preview_error(self, tipo: str, mensaje: str) -> None:
+        self.lbl_preview.setText(f"Error al generar el preview ({tipo}) — ver detalle.")
+        QMessageBox.critical(self, f"Error al generar el preview ({tipo})", mensaje)
 
     def _on_preview_fin(self) -> None:
         self._preview_en_curso = False

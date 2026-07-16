@@ -3,7 +3,7 @@ import json
 from urllib.request import urlopen
 
 from app.mapa.bridge import MapBridge
-from app.mapa.preview import VIS_PARAMS_DEFAULT, PreviewWorker
+from app.mapa.preview import VIS_PARAMS_DEFAULT, estirar_vis_al_rango
 from app.mapa.servidor import ServidorMapa
 
 
@@ -86,29 +86,28 @@ def _mock_reducer(monkeypatch):
 def test_preview_stretch_aplica_rango_real(monkeypatch):
     # El auto-stretch estira min/max al rango real del índice (rampa visible).
     _mock_reducer(monkeypatch)
-    w = PreviewWorker(lambda: None, auto_stretch=True)
-    w._estirar_al_rango_real(_ImagenFake({"NDVI_min": 0.16, "NDVI_max": 0.34}))
-    assert w._vis["min"] == 0.16
-    assert w._vis["max"] == 0.34
-    assert w._vis["palette"] == VIS_PARAMS_DEFAULT["palette"]  # paleta intacta
+    vis = estirar_vis_al_rango(_ImagenFake({"NDVI_min": 0.16, "NDVI_max": 0.34}), VIS_PARAMS_DEFAULT)
+    assert vis["min"] == 0.16
+    assert vis["max"] == 0.34
+    assert vis["palette"] == VIS_PARAMS_DEFAULT["palette"]  # paleta intacta
+
+
+def test_preview_stretch_no_muta_el_vis_de_entrada(monkeypatch):
+    # estirar_vis_al_rango devuelve una copia — no pisa VIS_PARAMS_DEFAULT global.
+    _mock_reducer(monkeypatch)
+    estirar_vis_al_rango(_ImagenFake({"NDVI_min": 0.16, "NDVI_max": 0.34}), VIS_PARAMS_DEFAULT)
+    assert VIS_PARAMS_DEFAULT["min"] == 0 and VIS_PARAMS_DEFAULT["max"] == 1
 
 
 def test_preview_stretch_falla_cae_al_default(monkeypatch):
     # Si reduceRegion rompe, el vis queda como estaba (fallback silencioso, no rompe preview).
     _mock_reducer(monkeypatch)
-    w = PreviewWorker(lambda: None)
-    w._estirar_al_rango_real(_ImagenFake(None, rompe=True))
-    assert w._vis["min"] == 0 and w._vis["max"] == 1
+    vis = estirar_vis_al_rango(_ImagenFake(None, rompe=True), VIS_PARAMS_DEFAULT)
+    assert vis["min"] == 0 and vis["max"] == 1
 
 
 def test_preview_stretch_rango_degenerado_no_estira(monkeypatch):
     # min == max (imagen constante) → no se estira (evita min==max en la paleta).
     _mock_reducer(monkeypatch)
-    w = PreviewWorker(lambda: None)
-    w._estirar_al_rango_real(_ImagenFake({"NDVI_min": 0.5, "NDVI_max": 0.5}))
-    assert w._vis["min"] == 0 and w._vis["max"] == 1
-
-
-def test_preview_sin_autostretch_mantiene_default():
-    w = PreviewWorker(lambda: None, auto_stretch=False)
-    assert w._vis == VIS_PARAMS_DEFAULT
+    vis = estirar_vis_al_rango(_ImagenFake({"NDVI_min": 0.5, "NDVI_max": 0.5}), VIS_PARAMS_DEFAULT)
+    assert vis["min"] == 0 and vis["max"] == 1

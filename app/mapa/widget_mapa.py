@@ -53,36 +53,3 @@ class WidgetMapa(QWidget):
     def closeEvent(self, event):
         self._servidor.detener()
         super().closeEvent(event)
-
-
-def refrescar_preview(widget_mapa: "WidgetMapa", construir_imagen, vis_params=None,
-                      on_ok=None, on_error=None):
-    """Lanza construir_imagen()+getMapId en un único thread; al volver, carga el tile
-    layer en el mapa. Regenerar en cada cambio de receta + botón "refrescar preview"
-    (HALLAZGO-2.3). `construir_imagen`: callable sin argumentos (auth + adapter +
-    ejecutor.construir_imagen) — ver nota de thread único en app.mapa.preview.
-
-    `on_ok(url_format)` / `on_error(msg)`: callbacks opcionales para que la UI muestre
-    feedback (sin ellos, éxito/error solo iban a stdout y el usuario no se enteraba)."""
-    from PySide6.QtCore import QThread
-
-    from app.mapa.preview import PreviewWorker
-
-    thread = QThread()
-    worker = PreviewWorker(construir_imagen, vis_params)
-    worker.moveToThread(thread)
-    thread.started.connect(worker.run)
-    worker.listo.connect(widget_mapa.cargar_preview)
-    if on_ok is not None:
-        worker.listo.connect(on_ok)
-    if on_error is not None:
-        worker.error.connect(on_error)
-    else:
-        worker.error.connect(lambda msg: print(f"[preview] error: {msg}"))
-    # limpieza del thread
-    worker.listo.connect(thread.quit)
-    worker.error.connect(thread.quit)
-    thread.finished.connect(worker.deleteLater)
-    thread.finished.connect(thread.deleteLater)
-    thread.start()
-    return thread  # guardar la referencia mientras vive, si no el GC lo mata

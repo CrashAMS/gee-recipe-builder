@@ -18,12 +18,9 @@ remote sensing.
 > still road ahead. The core works end-to-end; some features are still in
 > progress (see [Status](#status)).
 
-![gee-recipe-builder — index-first form, live JS/Python script, and NDVI preview on the map](docs/screenshot.png)
-
-*Building an NDVI recipe over a drawn area: pick the index and sensor, the
-Earth Engine script updates live, and the computed index renders on the map.*
-
 ---
+
+![screenshot](docs/screenshot.png)
 
 ## What it does
 
@@ -40,7 +37,9 @@ Earth Engine script updates live, and the computed index renders on the map.*
 - **Live script viewer** — see the generated JavaScript/Python update as you
   build the recipe, with a toggle between dialects. Copy it into the Code Editor,
   or let the app run it.
-- **Run it for you** — synchronous download of a real `.tif` to disk.
+- **Run it for you** — synchronous download of a real `.tif` to disk, async
+  export to Google Drive / Cloud Storage, or a live preview layer on the
+  built-in interactive map.
 
 ## Status
 
@@ -49,8 +48,8 @@ Earth Engine script updates live, and the computed index renders on the map.*
 | Domain core (index→sensor resolution, AOI parsing, JS/Python recipe compilation) | ✅ Done, covered by tests that don't touch GEE |
 | GEE auth + synchronous `.tif` download | ✅ Works end-to-end |
 | Qt UI (index-first form + live script viewer) | ✅ Functional |
-| Interactive map (draw AOI + live index preview) | 🚧 In progress |
-| Async export to Google Drive / Cloud Storage | ⏳ Planned |
+| Interactive map (draw AOI + live index preview) | ✅ Done |
+| Async export to Google Drive / Cloud Storage | ✅ Done |
 
 The core "intent → script" translation is covered by golden tests that require
 neither a GEE connection nor internet, so they run anywhere.
@@ -111,4 +110,4 @@ like to contribute code, please open an issue first so we can align on scope.
 
 ## License
 
-[MIT](LICENSE) © Álvaro Morales Serradell
+[MIT](LICENSE) © Álvaro Morales
