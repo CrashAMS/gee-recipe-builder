@@ -77,6 +77,39 @@ python -m app
 On first run the app walks you through Earth Engine authentication (OAuth in
 your browser) and asks for your Cloud project id.
 
+## Windows executable
+
+If you'd rather not install Python, build a standalone Windows app — no
+interpreter, no `pip install` on the target machine:
+
+```bash
+powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -Zip
+```
+
+That produces `dist\gee-recipe-builder\gee-recipe-builder.exe`. Double-click it
+to run. The `-Zip` flag also writes `dist\gee-recipe-builder-win64.zip`, ready
+to hand to someone else — they unzip it anywhere and run the `.exe`.
+
+Notes:
+
+- **Ship the whole folder, not just the `.exe`.** It's a PyInstaller *onedir*
+  build: the executable needs its sibling `_internal\` directory. This is
+  deliberate — the interactive map runs on QtWebEngine, and a single-file build
+  would re-extract ~500 MB of Chromium on every launch.
+- **Size:** ~800 MB unpacked (~300 MB zipped), almost all of it Qt/Chromium.
+- **Earth Engine auth is unchanged.** The build bundles no credentials; the
+  first run still does the browser OAuth flow and stores the result in your
+  user profile, exactly like the `python -m app` path.
+- **Smoke test the binary** — verifies the frozen bundle can load the index
+  catalog, the map assets and the GDAL stack:
+  ```bash
+  dist\gee-recipe-builder\gee-recipe-builder.exe --smoke
+  ```
+  Prints (and writes to `grb-smoke.log`) `SMOKE OK`, exit code 0.
+- **If the `.exe` dies without a message,** rebuild with a console attached to
+  see the traceback: `packaging\build.ps1 -Console`.
+- Windows SmartScreen will warn on first launch — the binary isn't code-signed.
+
 ## Run the tests
 
 ```bash

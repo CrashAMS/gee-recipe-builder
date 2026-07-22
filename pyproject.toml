@@ -24,6 +24,10 @@ dev = [
     "pytest>=8.0",
     "pytest-qt>=4.4",
 ]
+# Empaquetado del .exe de Windows — ver packaging/build.ps1
+build = [
+    "pyinstaller>=6.10",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

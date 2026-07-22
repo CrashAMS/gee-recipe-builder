@@ -22,6 +22,8 @@ credentials
 *.tiff
 *.png
 !docs/**/*.png
+!app/mapa/assets/**/*.png
+!packaging/*.png
 downloads/
 outputs/
 
@@ -39,3 +41,7 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Build del ejecutable (PyInstaller)
+packaging/*.log
+grb-smoke.log
