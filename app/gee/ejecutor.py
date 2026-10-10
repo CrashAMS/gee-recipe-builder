@@ -65,7 +65,7 @@ def verificar_banda_presente(imagen: ee.Image, banda: str) -> None:
     if banda not in bandas:
         raise BandaAusente(
             f"El índice '{banda}' no está en la imagen (bandas presentes: {bandas}). "
-            "Probable incompatibilidad índice+sensor que el pre-chequeo de F1 debió filtrar."
+            "Probable incompatibilidad índice+sensor que el pre-chequeo del catálogo debió filtrar."
         )
 
 
@@ -89,7 +89,7 @@ def ejecutar_a_disco(sol: SolicitudEjecucion, ruta_destino: str) -> str:
             f"La descarga estimada excede el límite (32MB/10000px): "
             f"{est.ancho_px}x{est.alto_px}px ≈ {est.bytes_estimados} bytes "
             f"(excede_bytes={est.excede_bytes}, excede_lado={est.excede_lado}). "
-            "Usá el export a Drive (F4) o subí `scale` / achicá el AOI."
+            "Usá el export a Google Drive (Salida: Drive / Cloud) o subí `scale` / achicá el AOI."
         )
 
     return descargar_imagen(imagen, sol.aoi, sol.scale, sol.crs, ruta_destino)

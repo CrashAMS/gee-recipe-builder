@@ -39,7 +39,7 @@ def clasificar_error(exc: Exception) -> ErrorEjecucionGEE:
     if _PATRON_DESCARGA.search(msg):
         return DescargaExcedeLimite(
             "La imagen excede el límite de descarga directa (32MB / 10000px por lado). "
-            "Usá el export a Google Drive (disponible en F4) o subí `scale` / achicá el AOI. "
+            "Usá el export a Google Drive (Salida: Drive / Cloud) o subí `scale` / achicá el AOI. "
             f"Detalle GEE: {msg}"
         )
     return ErrorGEEDesconocido(msg)

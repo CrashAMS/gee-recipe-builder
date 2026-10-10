@@ -20,8 +20,8 @@ COMPOSICIONES = [
 ]
 SALIDAS = [  # (etiqueta, valor, habilitada) — valores = Salida.*.value de F1 ("descarga", no "disco")
     ("Descarga a disco", "descarga", True),
-    ("Drive / Cloud (F4)", "drive", True),
-    ("Preview en mapa (F3b)", "preview", True),
+    ("Drive / Cloud", "drive", True),
+    ("Preview en mapa", "preview", True),
 ]
 
 
