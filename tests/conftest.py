@@ -34,3 +34,31 @@ def shp_sin_prj(tmp_path):
                       crs=None).to_file(p, engine="pyogrio")
     (p.with_suffix(".prj")).unlink(missing_ok=True)   # forzar CRS ausente
     return p
+
+
+@pytest.fixture
+def mapa_stub(monkeypatch):
+    """Reemplaza WidgetMapa por un QWidget liviano: los tests de UI no cargan
+    QtWebEngine ni piden tiles a la red. Misma API que usa VentanaPrincipal."""
+    from PySide6.QtCore import Signal
+    from PySide6.QtWidgets import QWidget
+
+    from app.ui import ventana_principal
+
+    class WidgetMapaStub(QWidget):
+        aoi_dibujada = Signal(dict)
+        aoi_borrada = Signal()
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.geometria_actual = None
+            self.previews_cargados = []
+
+        def cargar_preview(self, url_format: str) -> None:
+            self.previews_cargados.append(url_format)
+
+        def limpiar_preview(self) -> None:
+            self.previews_cargados.clear()
+
+    monkeypatch.setattr(ventana_principal, "WidgetMapa", WidgetMapaStub)
+    return WidgetMapaStub

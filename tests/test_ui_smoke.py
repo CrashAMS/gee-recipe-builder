@@ -7,7 +7,10 @@ from app.ui import workers
 
 
 @pytest.fixture
-def ventana(qtbot):
+def ventana(qtbot, mapa_stub, monkeypatch):
+    # Sin project configurado, _ejecutar abre un QInputDialog modal que cuelga el test.
+    from app.gee import config
+    monkeypatch.setattr(config, "hay_project_configurado", lambda: True)
     v = VentanaPrincipal()
     qtbot.addWidget(v)
     return v
