@@ -14,9 +14,10 @@ dependencies = [
     "ee_extra==2025.7.2",
     "requests==2.34.2",
     # --- F3a: UI (Essentials, NO PySide6 completo — Addons/WebEngine entran en F3b) ---
-    "PySide6-Essentials>=6.7",
+    # Tope <6.12: desde 6.12 QtWebEngine salió de PySide6-Addons (paquete aparte PySide6-WebEngine).
+    "PySide6-Essentials>=6.7,<6.12",
     # --- F3b: mapa interactivo — QtWebEngineWidgets + QtWebChannel (import lazy en widget_mapa.py/preview.py) ---
-    "PySide6-Addons>=6.7",
+    "PySide6-Addons>=6.7,<6.12",
 ]
 
 [project.optional-dependencies]
