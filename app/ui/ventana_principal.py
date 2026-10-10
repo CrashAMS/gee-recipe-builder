@@ -13,7 +13,7 @@ from PySide6.QtCore import Qt, QThreadPool, QTimer
 from app.dominio.compilador import dialecto_js, dialecto_python
 from app.dominio.receta import Salida
 from app.gee import config
-from app.mapa.widget_mapa import WidgetMapa
+from app.mapa.widget_mapa import QtWebEngineNoDisponible, WidgetMapa
 from app.ui.dialogos.dialogo_export import DialogoExportDrive
 from app.ui.panel_formulario import PanelFormulario
 from app.ui.visor_script import VisorScript
@@ -268,6 +268,12 @@ class VentanaPrincipal(QMainWindow):
 
 def main() -> None:
     app = QApplication(sys.argv)
-    ventana = VentanaPrincipal()
+    try:
+        ventana = VentanaPrincipal()
+    except QtWebEngineNoDisponible as e:
+        # Sin QtWebEngine no hay mapa: mensaje accionable en vez de un traceback crudo.
+        print(e, file=sys.stderr)
+        QMessageBox.critical(None, "Falta QtWebEngine", str(e))
+        sys.exit(1)
     ventana.show()
     sys.exit(app.exec())

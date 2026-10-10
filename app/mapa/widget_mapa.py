@@ -11,6 +11,17 @@ from app.mapa.servidor import ServidorMapa
 _ASSETS = Path(__file__).parent / "assets"
 
 
+class QtWebEngineNoDisponible(ImportError):
+    """Falta QtWebEngine/QtWebChannel: el mensaje dice qué instalar."""
+
+
+_MSG_FALTA_WEBENGINE = (
+    "El mapa interactivo necesita QtWebEngine, que no está instalado. "
+    "Desde PySide6 6.12 ya no viene en PySide6-Addons. Instalá una versión compatible con:\n"
+    '    pip install "PySide6-Essentials>=6.7,<6.12" "PySide6-Addons>=6.7,<6.12"'
+)
+
+
 class WidgetMapa(QWidget):
     aoi_dibujada = Signal(dict)   # re-expone MapBridge.aoi_recibida hacia el resto de la UI
     aoi_borrada = Signal()
@@ -18,8 +29,11 @@ class WidgetMapa(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         # Import lazy: solo al construir el widget se toca PySide6-Addons
-        from PySide6.QtWebChannel import QWebChannel
-        from PySide6.QtWebEngineWidgets import QWebEngineView
+        try:
+            from PySide6.QtWebChannel import QWebChannel
+            from PySide6.QtWebEngineWidgets import QWebEngineView
+        except ImportError as e:
+            raise QtWebEngineNoDisponible(f"{_MSG_FALTA_WEBENGINE}\n(Detalle: {e})") from None
 
         self._servidor = ServidorMapa(_ASSETS)
         self._servidor.iniciar()

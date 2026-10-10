@@ -76,6 +76,19 @@ def test_bridge_borra_aoi():
     assert bridge.ultima_geometria is None
 
 
+def test_widget_mapa_sin_webengine_da_mensaje_accionable(qtbot, monkeypatch):
+    # Simula PySide6 >=6.12 (QtWebEngine fuera de Addons): el error dice qué instalar.
+    import sys
+
+    import pytest
+
+    from app.mapa.widget_mapa import QtWebEngineNoDisponible, WidgetMapa
+
+    monkeypatch.setitem(sys.modules, "PySide6.QtWebEngineWidgets", None)
+    with pytest.raises(QtWebEngineNoDisponible, match=r"PySide6-Addons>=6\.7,<6\.12"):
+        WidgetMapa()
+
+
 def _mock_reducer(monkeypatch):
     # ee.Reducer.minMax() exige ee.Initialize(); en tests offline lo neutralizamos
     # (el _ImagenFake.reduceRegion ignora el reducer igual).
