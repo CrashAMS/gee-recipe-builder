@@ -34,6 +34,13 @@ class PanelParametros(QWidget):
     def valores(self) -> dict[str, float]:
         return {n: s.value() for n, s in self._spins.items()}
 
+    def set_valores(self, valores: dict) -> None:
+        """Setea solo los nombres presentes en el panel; ignora el resto."""
+        for nombre, valor in valores.items():
+            spin = self._spins.get(nombre)
+            if spin is not None:
+                spin.setValue(float(valor))
+
     def _limpiar(self) -> None:
         while self._form.rowCount():
             self._form.removeRow(0)

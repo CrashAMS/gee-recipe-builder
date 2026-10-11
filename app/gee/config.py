@@ -1,6 +1,8 @@
 """Persistencia del Google Cloud project elegido — F2."""
 import json
 import os
+import tempfile
+import time
 from pathlib import Path
 
 _APP = "gee-recipe-builder"
@@ -12,6 +14,28 @@ def _dir_config() -> Path:
     else:
         base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
     return Path(base) / _APP
+
+
+def escribir_json_atomico(ruta: Path, datos) -> None:
+    """Escribe `datos` como JSON sin dejar el archivo a medias: tmp en el mismo directorio
+    + `os.replace`. Reintenta una vez si Windows lo tiene tomado."""
+    ruta = Path(ruta)
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=ruta.parent, prefix=ruta.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(datos, f, indent=2, ensure_ascii=False)
+        try:
+            os.replace(tmp, ruta)
+        except PermissionError:
+            time.sleep(0.1)
+            os.replace(tmp, ruta)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _ruta_config() -> Path:

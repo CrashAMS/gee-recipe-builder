@@ -5,6 +5,8 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QFormLayout, QComboBox, QCheckBox, QDateEdit, QLabel, QGroupBox,
     QSpinBox,
 )
+from pathlib import Path
+
 from PySide6.QtCore import Signal, QDate
 
 from app.dominio import catalogo
@@ -234,6 +236,78 @@ class PanelFormulario(QWidget):
             escala=self.spin_escala.value(),
             parametros=self.panel_params.valores(),
         )
+
+    def cargar_receta(self, cargada) -> list[str]:
+        """Inverso de `receta_actual`: vuelca una `RecetaCargada` en los widgets y emite
+        `cambiado` UNA vez al final. Devuelve avisos (AOI degradado, valores no aplicables).
+        Levanta ValueError (form intacto) si el índice/sensor no existen en el catálogo."""
+        r = cargada.receta
+        idx_ind = next((i for i in range(self.combo_indice.count())
+                        if self.combo_indice.itemData(i).short_name == r.indice), -1)
+        if idx_ind < 0:
+            raise ValueError(f"El índice '{r.indice}' no existe en el catálogo.")
+        ids = [s.collection_id for s in catalogo.sensores_para(self.combo_indice.itemData(idx_ind))]
+        if r.sensor not in ids:
+            raise ValueError(f"El sensor '{r.sensor}' no existe o no es compatible con {r.indice}.")
+
+        avisos: list[str] = []
+        self.blockSignals(True)      # _on_indice/_on_sensor/params emiten adentro
+        try:
+            self.combo_indice.blockSignals(True)
+            self.combo_indice.setCurrentIndex(idx_ind)
+            self.combo_indice.blockSignals(False)
+            self._on_indice()                         # repuebla sensores y params
+            self.combo_sensor.blockSignals(True)
+            self.combo_sensor.setCurrentIndex(
+                next(i for i in range(self.combo_sensor.count())
+                     if self.combo_sensor.itemData(i).collection_id == r.sensor))
+            self.combo_sensor.blockSignals(False)
+            self._on_sensor()                         # máscara, escala nativa y límites de F1
+
+            ini_s, fin_s = catalogo.rango_fechas(r.sensor)
+            qmin = QDate.fromString(ini_s, "yyyy-MM-dd") if ini_s else QDate(1970, 1, 1)
+            qmax = QDate.fromString(fin_s, "yyyy-MM-dd") if fin_s else QDate.currentDate()
+            for de in (self.fecha_inicio, self.fecha_fin):
+                de.setDateRange(qmin, qmax)
+            self.fecha_fin.setDate(QDate.fromString(r.fecha_fin, "yyyy-MM-dd"))
+            self.fecha_inicio.setDate(QDate.fromString(r.fecha_inicio, "yyyy-MM-dd"))
+            if (self.fecha_inicio.date().toString("yyyy-MM-dd") != r.fecha_inicio
+                    or self.fecha_fin.date().toString("yyyy-MM-dd") != r.fecha_fin):
+                avisos.append("Fechas fuera de la disponibilidad del sensor: se ajustaron.")
+            self._aplicar_limites_fechas()
+
+            if self.chk_mascara.isEnabled():
+                self.chk_mascara.setChecked(r.mascara_nubes)
+            elif r.mascara_nubes:
+                avisos.append("El sensor no tiene máscara de nubes: se dejó desactivada.")
+            self.combo_comp.setCurrentIndex(max(0, self.combo_comp.findData(r.composicion.value)))
+            idx_sal = self.combo_salida.findData(r.salida.value)
+            if idx_sal >= 0 and self.combo_salida.model().item(idx_sal).isEnabled():
+                self.combo_salida.setCurrentIndex(idx_sal)
+            else:
+                avisos.append(f"La salida '{r.salida.value}' no está disponible: se dejó la actual.")
+            self.spin_escala.setValue(r.escala)
+            if self.spin_escala.value() != r.escala:
+                avisos.append(f"Escala {r.escala} m fuera de rango: se ajustó a {self.spin_escala.value()} m.")
+            self._escala_manual = True    # lo cargado no lo pisa el default por sensor
+            self.panel_params.set_valores(r.parametros)
+
+            d = cargada.descriptor_aoi
+            tipo = d.get("tipo") if d else None
+            if tipo in {"bbox", "geojson-dict"} or (
+                    tipo in {"shapefile", "geojson"} and d.get("ruta") and Path(d["ruta"]).exists()):
+                self.selector_aoi.set_descriptor(d)
+            else:
+                motivo = (f"No se encontró {d['ruta']}" if d and d.get("ruta")
+                          else "La receta no traía descriptor de zona")
+                avisos.append(f"{motivo}: se cargó la geometría embebida como zona dibujada.")
+                self.selector_aoi.set_descriptor({"tipo": "geojson-dict", "geojson": r.geometria})
+        finally:
+            self.combo_indice.blockSignals(False)
+            self.combo_sensor.blockSignals(False)
+            self.blockSignals(False)
+        self.cambiado.emit()
+        return avisos
 
     def ultimo_error_aoi(self) -> str | None:
         """Mensaje de `FuenteAOIError` de la última llamada a `receta_actual`, si la hubo."""

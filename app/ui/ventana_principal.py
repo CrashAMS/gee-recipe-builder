@@ -11,7 +11,10 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QThreadPool, QTimer
 
 from app.dominio.compilador import dialecto_js, dialecto_python
+from app import recientes
+from app.dominio.errores import RecetaJSONInvalida
 from app.dominio.receta import Salida
+from app.dominio.receta_json import a_json, desde_json
 from app.gee import config
 from app.mapa.widget_mapa import QtWebEngineNoDisponible, WidgetMapa
 from app.ui.dialogos.dialogo_export import DialogoExportDrive
@@ -80,6 +83,7 @@ class VentanaPrincipal(QMainWindow):
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 0)
         self.setCentralWidget(splitter)
+        self._armar_menu()
 
         # --- Wiring de actualización en vivo ---
         self.form.cambiado.connect(self._on_form_cambiado)
@@ -102,6 +106,62 @@ class VentanaPrincipal(QMainWindow):
         self.form.cambiado.connect(self._debounce_preview.start)
 
         print("VentanaPrincipal lista — form poblado, visor inicializado, mapa embebido")
+
+    def _armar_menu(self) -> None:
+        menu = self.menuBar().addMenu("&Archivo")
+        act_guardar = menu.addAction("Guardar receta…")
+        act_guardar.setShortcut("Ctrl+S")
+        act_guardar.triggered.connect(self._guardar_receta)
+        act_abrir = menu.addAction("Abrir receta…")
+        act_abrir.setShortcut("Ctrl+O")
+        act_abrir.triggered.connect(self._abrir_receta)
+        self._menu_recientes = menu.addMenu("Recientes")
+        self._menu_recientes.aboutToShow.connect(self._rebuild_recientes)
+
+    def _rebuild_recientes(self) -> None:
+        self._menu_recientes.clear()
+        rutas = recientes.listar()
+        if not rutas:
+            self._menu_recientes.addAction("(vacío)").setEnabled(False)
+        for ruta in rutas:
+            act = self._menu_recientes.addAction(Path(ruta).name)
+            act.setToolTip(ruta)
+            act.triggered.connect(lambda _=False, r=ruta: self._cargar_desde_archivo(r))
+
+    def _guardar_receta(self) -> None:
+        receta = self.form.receta_actual()
+        if receta is None:
+            QMessageBox.warning(self, "Receta incompleta",
+                                "Completá índice, sensor y zona antes de guardar.")
+            return
+        ruta, _ = QFileDialog.getSaveFileName(self, "Guardar receta", "", "Receta (*.json)")
+        if not ruta:
+            return
+        if not ruta.lower().endswith(".json"):
+            ruta += ".json"
+        try:
+            Path(ruta).write_text(a_json(receta, self.form.selector_aoi.descriptor()),
+                                  encoding="utf-8")
+            recientes.agregar(ruta)
+        except OSError as e:
+            QMessageBox.critical(self, "No se pudo guardar", str(e))
+            return
+        self.statusBar().showMessage(f"Receta guardada en {ruta}", 5000)
+
+    def _abrir_receta(self) -> None:
+        ruta, _ = QFileDialog.getOpenFileName(self, "Abrir receta", "", "Receta (*.json)")
+        if ruta:
+            self._cargar_desde_archivo(ruta)
+
+    def _cargar_desde_archivo(self, ruta: str) -> None:
+        try:
+            cargada = desde_json(Path(ruta).read_text(encoding="utf-8"))
+            avisos = self.form.cargar_receta(cargada)
+            recientes.agregar(ruta)
+        except (RecetaJSONInvalida, ValueError, OSError) as e:
+            QMessageBox.critical(self, "No se pudo abrir la receta", str(e))
+            return
+        self.statusBar().showMessage(" · ".join(avisos) or f"Receta abierta: {Path(ruta).name}", 8000)
 
     def _on_form_cambiado(self) -> None:
         """Slot central: arma la receta una sola vez y la reparte a script y estimación."""

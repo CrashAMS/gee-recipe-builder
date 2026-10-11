@@ -102,6 +102,28 @@ class SelectorAOI(QWidget):
             return None
         return {"tipo": "geojson-dict", "geojson": self._geom_dibujada}
 
+    def set_descriptor(self, d: dict | None) -> None:
+        """Inverso de `descriptor()`. Con `None` limpia todo. No valida que la ruta exista
+        (eso lo decide quien carga). Emite `cambiado` por las señales de los widgets."""
+        for pag in (0, 1):
+            self.stack.widget(pag)._edit.clear()  # type: ignore[attr-defined]
+        self.set_geometria_dibujada(None)
+        if d is None:
+            return
+        tipo = d.get("tipo")
+        if tipo in {"shapefile", "geojson"}:
+            idx = 0 if tipo == "shapefile" else 1
+            self.stack.widget(idx)._edit.setText(d.get("ruta", ""))  # type: ignore[attr-defined]
+            self.tipo.setCurrentIndex(idx)
+        elif tipo == "bbox":
+            for k, spin in self._bbox.items():
+                spin.setValue(float(d.get(k, 0.0)))
+            self.tipo.setCurrentIndex(2)
+        elif tipo == "geojson-dict":
+            self.set_geometria_dibujada(d.get("geojson"))
+        else:
+            raise ValueError(f"descriptor de AOI no reconocido: tipo={tipo!r}")
+
     def set_geometria_dibujada(self, geometria: dict | None) -> None:
         """Llamado por VentanaPrincipal cuando WidgetMapa.aoi_dibujada/aoi_borrada emite.
         Cambia el combo a 'Dibujado en el mapa' automáticamente al recibir una geometría."""

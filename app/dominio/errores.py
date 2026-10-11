@@ -5,6 +5,10 @@ class DominioError(Exception):
     """Raíz de todos los errores del dominio."""
 
 
+class RecetaJSONInvalida(DominioError):
+    """El JSON de una receta guardada es ilegible o incompatible (mensaje accionable)."""
+
+
 class SimboloDesconocido(DominioError):
     """Un símbolo del array `bands` no cae en banda, constante ni kernel."""
 
