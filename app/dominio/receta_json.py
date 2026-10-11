@@ -65,7 +65,7 @@ def _validar_tipos(k: dict) -> None:
 
 def _traducir_indice_legado(datos: dict) -> dict:
     """Recetas previas a F6b guardaban `"indice": "X"` → `indices=["X"]`. Si vienen las
-    dos claves, deben coincidir con el shim (`indices[0] == indice`)."""
+    dos claves, `indices` debe empezar por `indice`."""
     if "indice" not in datos:
         return datos
     legado = datos["indice"]

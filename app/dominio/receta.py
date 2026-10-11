@@ -53,11 +53,6 @@ class Receta:
     # `geometria` sigue siendo la unión disuelta (filterBounds/clip).
     features: dict | None = None
 
-    @property
-    def indice(self) -> str:
-        """Shim de solo lectura: el primer índice. Se retira en CIERRE del workflow."""
-        return self.indices[0]
-
     def __post_init__(self):
         """Coacciona `composicion`/`salida`/`producto` a sus enums si llegan como str
         desde la UI (F3a arma la Receta con valores de widgets, no siempre con el enum

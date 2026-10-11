@@ -50,9 +50,8 @@ def test_json_con_max_nubes_fuera_de_rango_es_invalido():
 from app.dominio.receta import PERIODOS, Producto, nombre_bandas  # noqa: E402
 
 
-def test_shim_indice_es_el_primero():
-    r = _receta(indices=["EVI", "NDVI"])
-    assert r.indice == r.indices[0] == "EVI"
+def test_receta_no_expone_indice():
+    assert not hasattr(_receta(indices=["EVI", "NDVI"]), "indice")
 
 
 @pytest.mark.parametrize("v,msg", [([], "vacía"), (["NDVI", "EVI", "NDVI"], "duplicados"),

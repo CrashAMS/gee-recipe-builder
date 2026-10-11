@@ -179,7 +179,7 @@ def test_cargar_receta_limpia_filtro_del_buscador(ventana):
     assert ventana.form.edit_buscar.text() == ""
     assert ventana.form.combo_dominio.currentData() is None
     assert ventana.form._indice_actual().short_name == "NDVI"
-    assert ventana.form.receta_actual().indice == "NDVI"
+    assert ventana.form.receta_actual().indices == ["NDVI"]
 
 
 # --- F4: filtro de nubes + conteo ---
