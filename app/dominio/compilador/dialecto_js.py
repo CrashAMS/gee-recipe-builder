@@ -235,55 +235,92 @@ _DEFS_ESCALA: dict[str, str] = {
     ),
 }
 
+# Imports del render sobre el plan neutral (F6a): debajo de la zona congelada a propósito.
+from app.dominio.compilador.plan import (  # noqa: E402
+    PlanCompilacion, Segmento, TipoPaso, construir_plan, unir)
 
-def _params_banda_js(r: Receta) -> str:
-    perfil = PERFILES[r.sensor]
-    idx = cargar_catalogo()[r.indice]
+
+def _params_banda_js(coleccion: str, indice: str, parametros: tuple[tuple[str, float], ...]) -> str:
+    perfil = PERFILES[coleccion]
+    idx = cargar_catalogo()[indice]
     pares = [f"{s!r}: img.select({perfil.bandas[s]!r})" for s in sorted(idx.bandas_requeridas)]
-    pares += [f"{k!r}: {v}" for k, v in sorted(r.parametros.items())]
+    pares += [f"{k!r}: {v}" for k, v in parametros]
     return "{" + ", ".join(pares) + "}"
 
 
-def _cola_salida(r: Receta) -> list[str]:
-    banda = f"img.select('{r.indice}')"
-    if r.salida is Salida.DESCARGA:
+def _banda(bandas: tuple[str, ...]) -> str:
+    if len(bandas) != 1:
+        raise NotImplementedError("select multi-banda llega en F6b")
+    return f"img.select('{bandas[0]}')"
+
+
+def _cola_salida(plan: PlanCompilacion) -> list[str]:
+    s = plan.paso(TipoPaso.SALIDA)
+    banda = _banda(s.bandas)
+    if s.tipo is Salida.DESCARGA:
         return [f"var url = {banda}.getDownloadURL("
-                f"{{scale: {r.escala}, region: aoi, format: 'GEO_TIFF'}});", "print(url);"]
-    if r.salida is Salida.DRIVE:
+                f"{{scale: {s.escala_m}, region: aoi, format: 'GEO_TIFF'}});", "print(url);"]
+    if s.tipo is Salida.DRIVE:
         return [f"Export.image.toDrive({{image: {banda}, region: aoi, "
-                f"scale: {r.escala}, description: '{r.indice}'}});"]
-    return [f"Map.addLayer({banda}, {{}}, '{r.indice}');", "Map.centerObject(aoi);"]
+                f"scale: {s.escala_m}, description: '{s.descripcion}'}});"]
+    return [f"Map.addLayer({banda}, {{}}, '{s.descripcion}');", "Map.centerObject(aoi);"]
+
+
+def segmentos(plan: PlanCompilacion) -> list[Segmento]:
+    """Render JS por segmentos. Levanta MascaraNoDisponibleJS al resolver `Mascara`
+    (después de la validación neutral de `construir_plan`)."""
+    fuente = plan.paso(TipoPaso.FUENTE)
+    fechas = plan.paso(TipoPaso.FILTRO_FECHAS)
+    nubes = plan.paso(TipoPaso.FILTRO_NUBES)
+    mascara = plan.paso(TipoPaso.MASCARA)
+    escala = plan.paso(TipoPaso.ESCALA)
+    indices = plan.paso(TipoPaso.INDICES)
+
+    # Preámbulo: lee el plan antes de renderizar pasos (require, def máscara, def escala).
+    preambulo = ["var spectral = require('users/dmlmont/spectral:spectral');"]
+    fn_mascara = None
+    if mascara:
+        fn_mascara = MASCARA_JS.get(mascara.coleccion)
+        if fn_mascara is None:
+            raise MascaraNoDisponibleJS(mascara.coleccion)
+        preambulo.append(_DEFS_MASCARA[fn_mascara])
+    fn_escala = ESCALA_JS.get(escala.coleccion)
+    if fn_escala:
+        preambulo.append(_DEFS_ESCALA[fn_escala])
+    segs: list[Segmento] = [((), preambulo)]
+
+    # Fuente + fechas + nubes son una sola cadena: el `;` va en el último filtro.
+    filtro_fecha = f"  .filterDate('{fechas.inicio}', '{fechas.fin}')"
+    cadena = [f"var aoi = ee.Geometry({geojson_js(fuente.geometria)});",
+              f"var col = ee.ImageCollection('{fuente.coleccion}')",
+              "  .filterBounds(aoi)"]
+    if nubes:
+        cadena += [filtro_fecha, f"  .filter(ee.Filter.lt('{nubes.propiedad}', {nubes.umbral}));"]
+        segs.append(((TipoPaso.FUENTE, TipoPaso.FILTRO_FECHAS, TipoPaso.FILTRO_NUBES), cadena))
+    else:
+        cadena.append(filtro_fecha + ";")
+        segs.append(((TipoPaso.FUENTE, TipoPaso.FILTRO_FECHAS), cadena))
+
+    if mascara:
+        if fn_mascara in _MASCARAS_NIVEL_COLECCION:
+            segs.append(((TipoPaso.MASCARA,), [f"col = {fn_mascara}(col);"]))
+        else:
+            segs.append(((TipoPaso.MASCARA,), [f"col = col.map({fn_mascara});"]))
+    # Escala sin función JS (ESCALA_JS[id] is None): el paso existe, sin texto.
+    segs.append(((TipoPaso.ESCALA,), [f"col = col.map({fn_escala});"] if fn_escala else []))
+    nombres = ", ".join(f"'{n}'" for n in indices.nombres)
+    if len(indices.nombres) != 1:
+        raise NotImplementedError("mapa de bandas multi-índice llega en F6b")
+    params = _params_banda_js(fuente.coleccion, indices.nombres[0], indices.parametros)
+    segs.append(((TipoPaso.INDICES,),
+                 ["col = col.map(function(img){",
+                  f"  return spectral.computeIndex(img, [{nombres}], {params});",
+                  "});"]))
+    segs.append(((TipoPaso.REDUCTOR,),
+                 [f"var img = col.{reductor(plan.paso(TipoPaso.REDUCTOR).composicion)}.clip(aoi);"]))
+    segs.append(((TipoPaso.SALIDA,), _cola_salida(plan)))
+    return segs
 
 
 def compilar(r: Receta) -> str:
-    L = ["var spectral = require('users/dmlmont/spectral:spectral');"]
-    if r.mascara_nubes:
-        fn_mascara = MASCARA_JS.get(r.sensor)
-        if fn_mascara is None:
-            raise MascaraNoDisponibleJS(r.sensor)
-        L.append(_DEFS_MASCARA[fn_mascara])
-    fn_escala = ESCALA_JS.get(r.sensor)
-    if fn_escala:
-        L.append(_DEFS_ESCALA[fn_escala])
-    prop_nubes = prop_nubes_filtro(r)
-    filtro_fecha = f"  .filterDate('{r.fecha_inicio}', '{r.fecha_fin}')"
-    L += [f"var aoi = ee.Geometry({geojson_js(r.geometria)});",
-          f"var col = ee.ImageCollection('{r.sensor}')",
-          "  .filterBounds(aoi)"]
-    if prop_nubes:
-        L += [filtro_fecha, f"  .filter(ee.Filter.lt('{prop_nubes}', {r.max_nubes_pct}));"]
-    else:
-        L.append(filtro_fecha + ";")
-    if r.mascara_nubes:
-        if fn_mascara in _MASCARAS_NIVEL_COLECCION:
-            L.append(f"col = {fn_mascara}(col);")
-        else:
-            L.append(f"col = col.map({fn_mascara});")
-    if fn_escala:
-        L.append(f"col = col.map({fn_escala});")
-    L += ["col = col.map(function(img){",
-          f"  return spectral.computeIndex(img, ['{r.indice}'], {_params_banda_js(r)});",
-          "});",
-          f"var img = col.{reductor(r.composicion)}.clip(aoi);"]
-    L += _cola_salida(r)
-    return "\n".join(L)
+    return unir(segmentos(construir_plan(r)))
