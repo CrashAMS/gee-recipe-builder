@@ -23,6 +23,7 @@ def ventana(qtbot, mapa_stub, monkeypatch, tmp_path):
     v = VentanaPrincipal()
     qtbot.addWidget(v)
     v._debounce_preview.stop()
+    v._debounce_conteo.timeout.disconnect()   # el conteo nunca dispara en tests (no toca GEE)
     return v
 
 
@@ -134,3 +135,17 @@ def test_abrir_json_invalido_muestra_error(ventana, monkeypatch, tmp_path):
     monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: (str(malo), ""))
     ventana._abrir_receta()
     assert mostrados and "JSON" in mostrados[0]
+
+
+def test_cargar_receta_con_max_nubes_tilda_checkbox_y_spin(ventana):
+    ventana.form.cargar_receta(RecetaCargada(_bbox_receta(max_nubes_pct=30), BBOX))
+    assert ventana.form.chk_nubes.isChecked()
+    assert ventana.form.spin_nubes.value() == 30
+    assert ventana.form.receta_actual().max_nubes_pct == 30
+
+
+def test_cargar_receta_sin_max_nubes_destilda(ventana):
+    ventana.form.chk_nubes.setChecked(True)
+    ventana.form.cargar_receta(RecetaCargada(_bbox_receta(), BBOX))
+    assert not ventana.form.chk_nubes.isChecked()
+    assert ventana.form.receta_actual().max_nubes_pct is None

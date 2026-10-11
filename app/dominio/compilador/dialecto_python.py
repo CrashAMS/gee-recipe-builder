@@ -1,6 +1,6 @@
 """Receta -> script Python (earthengine-api + eemont)."""
 from app.dominio.receta import Receta, Salida
-from app.dominio.compilador.base import geojson_py, reductor
+from app.dominio.compilador.base import geojson_py, prop_nubes_filtro, reductor
 
 
 def _params_kwargs(params: dict) -> str:
@@ -21,11 +21,16 @@ def _cola_salida(r: Receta) -> list[str]:
 
 
 def compilar(r: Receta) -> str:
+    prop_nubes = prop_nubes_filtro(r)
+    filtro_fecha = f"       .filterDate({r.fecha_inicio!r}, {r.fecha_fin!r})"
     L = ["import ee, eemont", "ee.Initialize()", "",
          f"aoi = ee.Geometry({geojson_py(r.geometria)})",
          f"col = (ee.ImageCollection({r.sensor!r})",
-         "       .filterBounds(aoi)",
-         f"       .filterDate({r.fecha_inicio!r}, {r.fecha_fin!r}))"]
+         "       .filterBounds(aoi)"]
+    if prop_nubes:
+        L += [filtro_fecha, f"       .filter(ee.Filter.lt({prop_nubes!r}, {r.max_nubes_pct})))"]
+    else:
+        L.append(filtro_fecha + ")")
     L.append("col = col." + ("maskClouds()." if r.mascara_nubes else "") + "scaleAndOffset()")
     L.append(f"col = col.spectralIndices([{r.indice!r}]{_params_kwargs(r.parametros)})")
     L.append(f"img = col.{reductor(r.composicion)}.clip(aoi)")

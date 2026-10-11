@@ -13,6 +13,7 @@ def ventana(qtbot, mapa_stub, monkeypatch):
     monkeypatch.setattr(config, "hay_project_configurado", lambda: True)
     v = VentanaPrincipal()
     qtbot.addWidget(v)
+    v._debounce_conteo.timeout.disconnect()   # el conteo nunca dispara en tests (no toca GEE)
     return v
 
 
@@ -179,3 +180,92 @@ def test_cargar_receta_limpia_filtro_del_buscador(ventana):
     assert ventana.form.combo_dominio.currentData() is None
     assert ventana.form._indice_actual().short_name == "NDVI"
     assert ventana.form.receta_actual().indice == "NDVI"
+
+
+# --- F4: filtro de nubes + conteo ---
+
+def _bbox_valido(ventana):
+    ventana.form.selector_aoi.tipo.setCurrentIndex(2)
+    for k, val in [("oeste", -59.0), ("sur", -35.0), ("este", -58.0), ("norte", -34.0)]:
+        ventana.form.selector_aoi._bbox[k].setValue(val)
+
+
+def _elegir_sensor(ventana, prefijo):
+    f = ventana.form
+    i = next(i for i in range(f.combo_sensor.count())
+             if f.combo_sensor.itemData(i).collection_id.startswith(prefijo))
+    f.combo_sensor.setCurrentIndex(i)
+
+
+def test_modis_deshabilita_controles_de_nubes(ventana):
+    from app.dominio import catalogo
+    f = ventana.form
+    ind = next(i for i in catalogo.buscar()
+               if any(s.collection_id.startswith("MODIS/") for s in catalogo.sensores_para(i))
+               and any(s.collection_id.startswith("COPERNICUS/S2") for s in catalogo.sensores_para(i)))
+    f.combo_indice.setCurrentIndex(next(
+        i for i in range(f.combo_indice.count()) if f.combo_indice.itemData(i).short_name == ind.short_name))
+    _bbox_valido(ventana)
+    _elegir_sensor(ventana, "COPERNICUS/S2")
+    f.chk_nubes.setChecked(True)
+    _elegir_sensor(ventana, "MODIS/")
+    assert not f.chk_nubes.isEnabled() and not f.spin_nubes.isEnabled()
+    assert not f.chk_nubes.isChecked()
+    assert f.receta_actual().max_nubes_pct is None
+
+
+def test_receta_actual_lleva_max_nubes_solo_con_checkbox_tildado(ventana):
+    f = ventana.form
+    _bbox_valido(ventana)
+    _elegir_sensor(ventana, "COPERNICUS/S2")
+    f.spin_nubes.setValue(35)
+    assert f.receta_actual().max_nubes_pct is None
+    f.chk_nubes.setChecked(True)
+    assert f.receta_actual().max_nubes_pct == 35
+    assert f.umbral_nubes() == 35
+
+
+def test_respuesta_de_conteo_con_token_viejo_se_descarta(ventana):
+    ventana._gen_conteo = 5
+    ventana.form.lbl_conteo.setText("Contando escenas")
+    ventana._on_conteo_ok((4, 10, 3))
+    ventana._on_conteo_error(4, "inesperado", "x")
+    assert ventana.form.lbl_conteo.text() == "Contando escenas"
+    ventana._umbral_conteo = 20
+    ventana._on_conteo_ok((5, 23, 9))
+    assert ventana.form.lbl_conteo.text() == "23 escenas, 9 con < 20 % nubes"
+    ventana._on_conteo_ok((5, 7, None))
+    assert ventana.form.lbl_conteo.text() == "7 escenas"
+    ventana._on_conteo_error(5, "inesperado", "sin red")
+    assert ventana.form.lbl_conteo.text() == "conteo no disponible: sin red"
+
+
+class _PoolEspia:
+    def __init__(self):
+        self.iniciados = []
+
+    def start(self, w):
+        self.iniciados.append(w)
+
+
+def test_sin_project_no_se_lanza_conteo(ventana, monkeypatch):
+    from app.gee import config
+    monkeypatch.setattr(config, "hay_project_configurado", lambda: False)
+    ventana.pool = _PoolEspia()
+    _bbox_valido(ventana)
+    g = ventana._gen_conteo
+    ventana._lanzar_conteo()
+    assert ventana.pool.iniciados == []
+    ventana._on_conteo_ok((g, 5, 1))   # respuesta en vuelo anterior al salto
+    assert ventana.form.lbl_conteo.text() == ""
+
+
+def test_lanzar_conteo_incrementa_token_y_arma_worker(ventana):
+    ventana.pool = _PoolEspia()
+    _bbox_valido(ventana)
+    g0 = ventana._gen_conteo
+    ventana._lanzar_conteo()
+    ventana._lanzar_conteo()
+    assert ventana._gen_conteo == g0 + 2
+    assert [w.generacion for w in ventana.pool.iniciados] == [g0 + 1, g0 + 2]
+    assert ventana.form.lbl_conteo.text().startswith("Contando escenas")

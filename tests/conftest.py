@@ -36,6 +36,26 @@ def shp_sin_prj(tmp_path):
     return p
 
 
+@pytest.fixture(autouse=True)
+def _sin_worker_conteo_real(monkeypatch):
+    """Ningun test de ventana debe tocar GEE: el WorkerConteo real se reemplaza por
+    un QRunnable inerte (los tests que lo necesitan lo parchean por su cuenta)."""
+    from PySide6.QtCore import QRunnable
+    from app.ui import ventana_principal
+    from app.ui.workers import SenalesConteo
+
+    class WorkerConteoInerte(QRunnable):
+        def __init__(self, receta, generacion, umbral, project_id=None):
+            super().__init__()
+            self.receta, self.generacion, self.umbral = receta, generacion, umbral
+            self.senales = SenalesConteo()
+
+        def run(self):
+            pass
+
+    monkeypatch.setattr(ventana_principal, "WorkerConteo", WorkerConteoInerte)
+
+
 @pytest.fixture
 def mapa_stub(monkeypatch):
     """Reemplaza WidgetMapa por un QWidget liviano: los tests de UI no cargan

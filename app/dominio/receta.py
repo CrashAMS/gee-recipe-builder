@@ -30,11 +30,16 @@ class Receta:
     salida: Salida
     escala: int = 10                # scale en metros
     parametros: dict[str, float] = field(default_factory=dict)  # overrides de defaults
+    max_nubes_pct: int | None = None  # descarta escenas con nubes >= X %; None = sin filtro
 
     def __post_init__(self):
         """Coacciona `composicion`/`salida` a sus enums si llegan como str desde la UI
         (F3a arma la Receta con valores de widgets, no siempre con el enum en mano).
         `object.__setattr__` porque la dataclass es frozen."""
+        m = self.max_nubes_pct
+        if m is not None and (isinstance(m, bool) or not isinstance(m, int) or not 0 <= m <= 100):
+            raise ValueError(
+                f"max_nubes_pct debe ser un entero entre 0 y 100 (o None para no filtrar); recibí {m!r}.")
         if not isinstance(self.composicion, Composicion):
             object.__setattr__(self, "composicion", Composicion(self.composicion))
         if not isinstance(self.salida, Salida):

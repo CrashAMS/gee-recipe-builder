@@ -14,7 +14,7 @@ GEE en vivo — el contrato lo fija el golden test, no la fidelidad runtime.
 from app.dominio.receta import Receta, Salida
 from app.dominio.catalogo.sensores import PERFILES
 from app.dominio.catalogo.indices import cargar_catalogo
-from app.dominio.compilador.base import geojson_js, reductor
+from app.dominio.compilador.base import geojson_js, prop_nubes_filtro, reductor
 from app.dominio.errores import MascaraNoDisponibleJS
 
 # --- Máscara de nubes por collection ID (ee_extra.QA.clouds.maskClouds, lookup). ---
@@ -265,10 +265,15 @@ def compilar(r: Receta) -> str:
     fn_escala = ESCALA_JS.get(r.sensor)
     if fn_escala:
         L.append(_DEFS_ESCALA[fn_escala])
+    prop_nubes = prop_nubes_filtro(r)
+    filtro_fecha = f"  .filterDate('{r.fecha_inicio}', '{r.fecha_fin}')"
     L += [f"var aoi = ee.Geometry({geojson_js(r.geometria)});",
           f"var col = ee.ImageCollection('{r.sensor}')",
-          "  .filterBounds(aoi)",
-          f"  .filterDate('{r.fecha_inicio}', '{r.fecha_fin}');"]
+          "  .filterBounds(aoi)"]
+    if prop_nubes:
+        L += [filtro_fecha, f"  .filter(ee.Filter.lt('{prop_nubes}', {r.max_nubes_pct}));"]
+    else:
+        L.append(filtro_fecha + ";")
     if r.mascara_nubes:
         if fn_mascara in _MASCARAS_NIVEL_COLECCION:
             L.append(f"col = {fn_mascara}(col);")

@@ -33,23 +33,44 @@ class SolicitudEjecucion:
     scale: float
     crs: str = "EPSG:4326"
     params_indice: dict = field(default_factory=dict)
+    propiedad_nubes: str | None = None   # propiedad GEE de % nubes (viene del perfil de sensor)
+    max_nubes_pct: int | None = None     # descarta escenas con nubes >= X %; None = sin filtro
+
+
+def _coleccion_base(sol: SolicitudEjecucion) -> "ee.ImageCollection":
+    """Colección filtrada por bounds + fechas (sin filtro de nubes, sin máscara)."""
+    return (
+        ee.ImageCollection(sol.collection_id)
+        .filterBounds(sol.aoi)
+        .filterDate(sol.fecha_inicio, sol.fecha_fin)
+    )
 
 
 def construir_imagen(sol: SolicitudEjecucion) -> ee.Image:
     """Pipeline [decisión #9]: mask → scale → index (por imagen) → reduce → select → clip."""
     if sol.reduccion not in _REDUCTORES:
         raise ValueError(f"Reducción no soportada: {sol.reduccion!r} (opciones: {list(_REDUCTORES)})")
-    col = (
-        ee.ImageCollection(sol.collection_id)
-        .filterBounds(sol.aoi)
-        .filterDate(sol.fecha_inicio, sol.fecha_fin)
-    )
+    col = _coleccion_base(sol)
+    if sol.max_nubes_pct is not None and sol.propiedad_nubes:
+        col = col.filter(ee.Filter.lt(sol.propiedad_nubes, sol.max_nubes_pct))
     if sol.mascara_nubes:
         col = col.maskClouds()
     col = col.scaleAndOffset()
     col = col.spectralIndices([sol.indice], **sol.params_indice)
     imagen = _REDUCTORES[sol.reduccion](col).select(sol.indice)
     return imagen.clip(sol.aoi)
+
+
+def contar_imagenes(sol: SolicitudEjecucion, umbral: int) -> tuple[int, int | None]:
+    """(total, con_pocas_nubes) de escenas en bounds+fechas, en UNA sola ida a GEE.
+    Ignora `sol.max_nubes_pct`: `umbral` es el X de "< X % nubes". Sin propiedad de
+    nubes en el sensor (MODIS) el segundo valor es None."""
+    col = _coleccion_base(sol)
+    partes = {"total": col.size()}
+    if sol.propiedad_nubes:
+        partes["pocas"] = col.filter(ee.Filter.lt(sol.propiedad_nubes, umbral)).size()
+    res = ee.Dictionary(partes).getInfo()
+    return int(res["total"]), (int(res["pocas"]) if "pocas" in res else None)
 
 
 # Alias público: F3b (mapa interactivo, getMapId) y F4 (export a Drive) solo

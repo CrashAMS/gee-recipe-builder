@@ -98,3 +98,39 @@ def test_escala_js_tiene_decision_explicita_para_todo_el_catalogo():
     # Todo ID del catálogo (40) tiene una decisión de escala explícita: nombre
     # de función JS, o `None` transcripto a mano ("sin escala", ver docstring).
     assert set(ESCALA_JS.keys()) == set(PERFILES.keys())
+
+
+# --- F4: filtro de nubes por escena (max_nubes_pct) ---
+
+def test_golden_ndvi_s2_nubes():
+    r = _receta(max_nubes_pct=20)
+    check_golden("ndvi_s2_nubes.js", dialecto_js.compilar(r))
+    check_golden("ndvi_s2_nubes.py", dialecto_python.compilar(r))
+
+
+def test_golden_ndvi_l8c2l2_nubes():
+    r = _receta(sensor="LANDSAT/LC08/C02/T1_L2", max_nubes_pct=30)
+    check_golden("ndvi_l8c2l2_nubes.js", dialecto_js.compilar(r))
+    check_golden("ndvi_l8c2l2_nubes.py", dialecto_python.compilar(r))
+
+
+@pytest.mark.parametrize("dialecto,marca_mascara", [
+    (dialecto_js, "col = maskS2clouds(col);"), (dialecto_python, "col = col.maskClouds()")])
+def test_filtro_nubes_va_tras_filterdate_y_antes_de_la_mascara(dialecto, marca_mascara):
+    s = dialecto.compilar(_receta(max_nubes_pct=20))
+    i_fecha = s.index(".filterDate")
+    i_filtro = s.index("ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20)")
+    i_mascara = s.index(marca_mascara)
+    assert i_fecha < i_filtro < i_mascara
+
+
+@pytest.mark.parametrize("dialecto", [dialecto_js, dialecto_python])
+def test_modis_con_umbral_levanta_filtro_nubes_no_disponible(dialecto):
+    from app.dominio.errores import FiltroNubesNoDisponible
+    with pytest.raises(FiltroNubesNoDisponible):
+        dialecto.compilar(_receta(sensor="MODIS/061/MOD09GA", max_nubes_pct=20))
+
+
+def test_sin_umbral_no_aparece_filtro_de_nubes():
+    for d in (dialecto_js, dialecto_python):
+        assert "ee.Filter.lt" not in d.compilar(_receta())

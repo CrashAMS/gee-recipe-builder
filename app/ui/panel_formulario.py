@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QFormLayout, QComboBox, QCheckBox, QDateEdit, QLabel, QGroupBox,
-    QSpinBox, QLineEdit,
+    QSpinBox, QLineEdit, QHBoxLayout,
 )
 from pathlib import Path
 
@@ -91,6 +91,19 @@ class PanelFormulario(QWidget):
             de.setDisplayFormat("yyyy-MM-dd")
         self.chk_mascara = QCheckBox("Aplicar máscara de nubes")
         self.chk_mascara.setChecked(True)
+        self.chk_nubes = QCheckBox("Descartar escenas con nubes ≥")
+        self.spin_nubes = QSpinBox()
+        self.spin_nubes.setRange(0, 100)
+        self.spin_nubes.setValue(20)
+        self.spin_nubes.setSuffix(" %")
+        fila_nubes = QWidget()
+        h_nubes = QHBoxLayout(fila_nubes)
+        h_nubes.setContentsMargins(0, 0, 0, 0)
+        h_nubes.addWidget(self.chk_nubes)
+        h_nubes.addWidget(self.spin_nubes)
+        h_nubes.addStretch()
+        self.lbl_conteo = QLabel()
+        self.lbl_conteo.setWordWrap(True)
         self.combo_comp = QComboBox()
         for etiqueta, valor in COMPOSICIONES:
             self.combo_comp.addItem(etiqueta, valor)
@@ -108,6 +121,8 @@ class PanelFormulario(QWidget):
         f_r.addRow("Desde", self.fecha_inicio)
         f_r.addRow("Hasta", self.fecha_fin)
         f_r.addRow(self.chk_mascara)
+        f_r.addRow(fila_nubes)
+        f_r.addRow(self.lbl_conteo)
         f_r.addRow("Composición", self.combo_comp)
         f_r.addRow("Escala", self.spin_escala)
         self.lbl_estimacion = QLabel()
@@ -128,7 +143,8 @@ class PanelFormulario(QWidget):
         for sig in (
             self.panel_params.cambiado, self.selector_aoi.cambiado,
             self.fecha_inicio.dateChanged, self.fecha_fin.dateChanged,
-            self.chk_mascara.toggled, self.combo_comp.currentIndexChanged,
+            self.chk_mascara.toggled, self.chk_nubes.toggled, self.spin_nubes.valueChanged,
+            self.combo_comp.currentIndexChanged,
             self.spin_escala.valueChanged, self.combo_salida.currentIndexChanged,
         ):
             sig.connect(self.cambiado)
@@ -213,6 +229,15 @@ class PanelFormulario(QWidget):
             )
         else:
             self.chk_mascara.setToolTip("")
+        hay_prop_nubes = catalogo.propiedad_nubes(sen.collection_id) is not None
+        self.chk_nubes.setEnabled(hay_prop_nubes)
+        self.spin_nubes.setEnabled(hay_prop_nubes)
+        if not hay_prop_nubes:
+            self.chk_nubes.setChecked(False)
+            self.chk_nubes.setToolTip(
+                f"El sensor {sen.display_name} no informa % de nubes por escena.")
+        else:
+            self.chk_nubes.setToolTip("")
         nativa = catalogo.escala_nativa(sen.collection_id)
         if nativa is not None and not self._escala_manual:
             self.spin_escala.blockSignals(True)   # set programático: ni cambiado extra ni flag manual
@@ -264,6 +289,10 @@ class PanelFormulario(QWidget):
         self.lbl_estimacion.setText(
             texto_estimacion(est, descarga_directa=receta.salida == Salida.DESCARGA))
 
+    def umbral_nubes(self) -> int:
+        """Valor del spin de nubes (X de "< X %"), aunque el checkbox esté destildado."""
+        return self.spin_nubes.value()
+
     def receta_actual(self) -> Receta | None:
         """Arma la Receta desde el estado del form, o None si falta algo obligatorio
         o si el AOI no se pudo resolver (ver `ultimo_error_aoi`)."""
@@ -289,6 +318,8 @@ class PanelFormulario(QWidget):
             salida=self.combo_salida.currentData(),               # "descarga" — matchea Salida.DESCARGA
             escala=self.spin_escala.value(),
             parametros=self.panel_params.valores(),
+            max_nubes_pct=(self.spin_nubes.value()
+                           if self.chk_nubes.isChecked() and self.chk_nubes.isEnabled() else None),
         )
 
     def cargar_receta(self, cargada) -> list[str]:
@@ -337,6 +368,12 @@ class PanelFormulario(QWidget):
                 self.chk_mascara.setChecked(r.mascara_nubes)
             elif r.mascara_nubes:
                 avisos.append("El sensor no tiene máscara de nubes: se dejó desactivada.")
+            if r.max_nubes_pct is not None:
+                self.spin_nubes.setValue(r.max_nubes_pct)
+            if self.chk_nubes.isEnabled():
+                self.chk_nubes.setChecked(r.max_nubes_pct is not None)
+            elif r.max_nubes_pct is not None:
+                avisos.append("El sensor no informa % de nubes: se quitó el filtro por escena.")
             self.combo_comp.setCurrentIndex(max(0, self.combo_comp.findData(r.composicion.value)))
             idx_sal = self.combo_salida.findData(r.salida.value)
             if idx_sal >= 0 and self.combo_salida.model().item(idx_sal).isEnabled():

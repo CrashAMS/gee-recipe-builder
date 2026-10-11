@@ -7,6 +7,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 
+from app.dominio import catalogo
+from app.dominio.errores import FiltroNubesNoDisponible
 from app.dominio.receta import Receta
 from app.gee import auth, ejecutor
 from app.gee.auth import ErrorAuthGEE
@@ -22,6 +24,11 @@ def solicitud_desde_receta(receta: Receta) -> "ejecutor.SolicitudEjecucion":
     """
     import ee  # import tardío: solo cuando ya hay sesión GEE
 
+    prop_nubes = catalogo.propiedad_nubes(receta.sensor)
+    if receta.max_nubes_pct is not None and prop_nubes is None:
+        raise FiltroNubesNoDisponible(
+            f"El sensor {receta.sensor} no tiene propiedad de % de nubes: no se puede filtrar por escena.")
+
     return ejecutor.SolicitudEjecucion(
         collection_id=receta.sensor,
         aoi=ee.Geometry(receta.geometria),      # F1 entrega GeoJSON dict, nunca ee.Geometry
@@ -32,6 +39,8 @@ def solicitud_desde_receta(receta: Receta) -> "ejecutor.SolicitudEjecucion":
         reduccion=receta.composicion.value,     # enum de F1 → string que _REDUCTORES de F2 conoce
         scale=receta.escala,
         params_indice=dict(receta.parametros),
+        propiedad_nubes=prop_nubes,
+        max_nubes_pct=receta.max_nubes_pct,
     )
 
 
@@ -107,6 +116,46 @@ class WorkerPreview(QRunnable):
             self.senales.error.emit(type(e).__name__, str(e))
         except Exception as e:  # noqa: BLE001
             self.senales.error.emit("inesperado", str(e))
+        finally:
+            self.senales.finalizado.emit()
+
+
+class SenalesConteo(SenalesWorker):
+    """Suma `error_gen(generacion, tipo, mensaje)` para conectar a un slot ligado (hilo GUI)."""
+    error_gen = Signal(int, str, str)
+
+
+class WorkerConteo(QRunnable):
+    """Cuenta escenas de la receta (total y con < `umbral` % nubes) en QThreadPool.
+    `terminado` emite `(generacion, total, con_pocas_nubes)`; la ventana descarta las
+    respuestas cuyo token `generacion` ya no es el vigente."""
+
+    def __init__(self, receta: Receta, generacion: int, umbral: int,
+                 project_id: str | None = None) -> None:
+        super().__init__()
+        self.receta = receta
+        self.generacion = generacion
+        self.umbral = umbral
+        self.project_id = project_id
+        self.senales = SenalesConteo()
+
+    def _fallo(self, tipo: str, mensaje: str) -> None:
+        self.senales.error.emit(tipo, mensaje)
+        self.senales.error_gen.emit(self.generacion, tipo, mensaje)
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            auth.asegurar_sesion(self.project_id)
+            sol = solicitud_desde_receta(self.receta)
+            total, pocas = ejecutor.contar_imagenes(sol, self.umbral)
+            self.senales.terminado.emit((self.generacion, total, pocas))
+        except ErrorAuthGEE as e:
+            self._fallo("auth", str(e))
+        except ErrorEjecucionGEE as e:
+            self._fallo(type(e).__name__, str(e))
+        except Exception as e:  # noqa: BLE001
+            self._fallo("inesperado", str(e))
         finally:
             self.senales.finalizado.emit()
 

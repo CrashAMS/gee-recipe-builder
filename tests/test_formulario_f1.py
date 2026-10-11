@@ -12,6 +12,7 @@ def ventana(qtbot, mapa_stub, monkeypatch):
     v = VentanaPrincipal()
     qtbot.addWidget(v)
     v._debounce_preview.stop()
+    v._debounce_conteo.timeout.disconnect()   # el conteo nunca dispara en tests (no toca GEE)
     return v
 
 

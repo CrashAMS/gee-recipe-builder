@@ -22,7 +22,9 @@ from app.mapa.widget_mapa import QtWebEngineNoDisponible, WidgetMapa
 from app.ui.dialogos.dialogo_export import DialogoExportDrive
 from app.ui.panel_formulario import PanelFormulario
 from app.ui.visor_script import VisorScript
-from app.ui.workers import WorkerConstruirImagenExport, WorkerDescarga, WorkerPreview
+from app.ui.workers import (
+    WorkerConstruirImagenExport, WorkerConteo, WorkerDescarga, WorkerPreview,
+)
 
 # Debounce del auto-refresh de preview al cambiar la receta (decisión #6 F3b):
 # regenerar mapid en cada cambio, pero sin saturar GEE en cada tecla/spin.
@@ -128,6 +130,15 @@ class VentanaPrincipal(QMainWindow):
         self._debounce_preview.setInterval(_DEBOUNCE_PREVIEW_MS)
         self._debounce_preview.timeout.connect(lambda: self._lanzar_preview(interactivo=False))
         self.form.cambiado.connect(self._debounce_preview.start)
+        # Conteo de escenas (F4): debounce propio + token de generación (sin flag anti-solape):
+        # cada lanzamiento incrementa `_gen_conteo` y se descarta toda respuesta con token viejo.
+        self._gen_conteo = 0
+        self._umbral_conteo = 0
+        self._debounce_conteo = QTimer(self)
+        self._debounce_conteo.setSingleShot(True)
+        self._debounce_conteo.setInterval(_DEBOUNCE_PREVIEW_MS)
+        self._debounce_conteo.timeout.connect(self._lanzar_conteo)
+        self.form.cambiado.connect(self._debounce_conteo.start)
         self.combo_paleta.currentIndexChanged.connect(self._on_paleta_cambiada)
         self.spin_min.valueChanged.connect(self._on_rango_manual)
         self.spin_max.valueChanged.connect(self._on_rango_manual)
@@ -381,6 +392,38 @@ class VentanaPrincipal(QMainWindow):
         worker.senales.error.connect(self._on_preview_error)
         worker.senales.finalizado.connect(self._on_preview_fin)
         self.pool.start(worker)
+
+    def _lanzar_conteo(self) -> None:
+        """Cuenta escenas (total y con < X % nubes) de la receta actual. Se salta en silencio
+        sin receta o sin Cloud project (igual que el preview no interactivo). Los errores van
+        a `lbl_conteo`, nunca a un diálogo."""
+        receta = self.form.receta_actual()
+        if receta is None or not config.hay_project_configurado():
+            self._gen_conteo += 1       # invalida cualquier conteo en vuelo
+            self.form.lbl_conteo.setText("")
+            return
+        self._gen_conteo += 1
+        gen = self._gen_conteo
+        self.form.lbl_conteo.setText("Contando escenas…")
+        self._umbral_conteo = self.form.umbral_nubes()
+        worker = WorkerConteo(receta, gen, self._umbral_conteo)
+        worker.senales.terminado.connect(self._on_conteo_ok)
+        worker.senales.error_gen.connect(self._on_conteo_error)
+        self.pool.start(worker)
+
+    def _on_conteo_ok(self, payload) -> None:
+        gen, total, pocas = payload
+        if gen != self._gen_conteo:
+            return                      # respuesta vieja: ya hay un conteo más reciente
+        texto = f"{total} escenas"
+        if pocas is not None:
+            texto += f", {pocas} con < {self._umbral_conteo} % nubes"
+        self.form.lbl_conteo.setText(texto)
+
+    def _on_conteo_error(self, gen: int, tipo: str, mensaje: str) -> None:
+        if gen != self._gen_conteo:
+            return
+        self.form.lbl_conteo.setText(f"conteo no disponible: {mensaje}")
 
     def _on_preview_ok(self, resultado) -> None:
         """`resultado`: PreviewResultado. Pinta tiles + leyenda y vuelca min/max a los
