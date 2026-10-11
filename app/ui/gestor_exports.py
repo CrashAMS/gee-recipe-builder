@@ -14,6 +14,8 @@ from app.gee.exportador import ConfigExport, ExportadorGEE, ProgresoExport
 from app.gee.registro_exports import RegistroExports, nueva_entrada
 from app.ui.workers import _INTERVALO_POLL_MS, PollerTask, WorkerLanzarExport
 
+AVISO_SIN_SESION = "Sin sesión GEE: los exports pendientes se retoman al autenticarte"
+
 
 class GestorExports(QObject):
     cambio = Signal(str)                    # task_id cuyo estado/aviso cambió
@@ -30,6 +32,7 @@ class GestorExports(QObject):
         self._intervalo_ms = intervalo_ms
         self._lanzadores: dict[str, WorkerLanzarExport] = {}
         self._pollers: dict[str, PollerTask] = {}
+        self._sin_sesion: set[str] = set()  # pollers de recuperar() que no hallaron sesión GEE
         self._avisos: dict[str, str] = {}   # último error de seguimiento por task (no persiste)
 
     def _start(self, worker) -> None:
@@ -51,8 +54,17 @@ class GestorExports(QObject):
         """Arranca un poller por cada entrada no terminal del registro. Devuelve cuántas."""
         pendientes = self.registro.pendientes()
         for e in pendientes:
-            self._pollear(e["task_id"])
+            self._pollear(e["task_id"], interactivo=False)   # sin OAuth sorpresa al abrir
         return len(pendientes)
+
+    def reintentar_recuperacion(self) -> int:
+        """Retoma los pollers que quedaron sin sesión (llamar cuando una sesión se establece)."""
+        ids = [t for t in self._sin_sesion if not self.siguiendo(t)]
+        self._sin_sesion.clear()
+        for t in ids:
+            self._avisos.pop(t, None)
+            self._pollear(t, interactivo=False)
+        return len(ids)
 
     def cancelar(self, task_id: str) -> None:
         """Cancelación explícita (botón del panel): server-side vía el poller del task."""
@@ -80,17 +92,19 @@ class GestorExports(QObject):
         return self._avisos.get(task_id)
 
     # ---- internos ----
-    def _pollear(self, task_id: str, cancelar: bool = False) -> None:
+    def _pollear(self, task_id: str, cancelar: bool = False, interactivo: bool = True) -> None:
         actual = self._pollers.get(task_id)
         if actual is not None and not actual.ha_terminado():
             if cancelar:
                 actual.solicitar_cancelacion()
             return
-        p = PollerTask(task_id, exportador=self._exportador, intervalo_ms=self._intervalo_ms)
+        p = PollerTask(task_id, exportador=self._exportador, intervalo_ms=self._intervalo_ms,
+                       interactivo=interactivo)
         if cancelar:
             p.solicitar_cancelacion()
         p.senales.progreso.connect(self._on_progreso)
         p.senales.fallo.connect(self._on_fallo_poller)
+        p.senales.sin_sesion.connect(self._on_sin_sesion)
         p.senales.finalizado.connect(self._on_poller_finalizado)
         self._pollers[task_id] = p
         self._start(p)
@@ -100,6 +114,7 @@ class GestorExports(QObject):
         if isinstance(w, PollerTask):
             pares = ((w.senales.progreso, self._on_progreso),
                      (w.senales.fallo, self._on_fallo_poller),
+                     (w.senales.sin_sesion, self._on_sin_sesion),
                      (w.senales.finalizado, self._on_poller_finalizado))
         else:
             pares = ((w.senales.iniciado, self._on_iniciado),
@@ -119,6 +134,7 @@ class GestorExports(QObject):
         except OSError as exc:   # disco lleno / permisos: el task igual corre, se sigue en memoria
             self._avisos[task_id] = f"No se pudo guardar en el registro: {exc}"
         self.cambio.emit(task_id)
+        self.reintentar_recuperacion()   # lanzar exitoso ⇒ hay sesión: retomar los sin sesión
         clave = next((c for c, w in self._lanzadores.items() if w.task_id == task_id), "")
         self.lanzado.emit(clave, task_id)
         self._pollear(task_id)
@@ -147,6 +163,13 @@ class GestorExports(QObject):
     def _on_fallo_poller(self, task_id: str, mensaje: str) -> None:
         # El task puede seguir vivo server-side: no se marca fallido en el registro.
         self._avisos[task_id] = mensaje
+        self.cambio.emit(task_id)
+
+    @Slot(str)
+    def _on_sin_sesion(self, task_id: str) -> None:
+        # No se marca fallido: el task sigue vivo server-side; se retoma al autenticarse.
+        self._sin_sesion.add(task_id)
+        self._avisos[task_id] = AVISO_SIN_SESION
         self.cambio.emit(task_id)
 
     @Slot(str)

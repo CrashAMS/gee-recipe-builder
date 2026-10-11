@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.gee import auth
+from app.gee import auth, config
 from app.gee.exportador import ConfigExport, DestinoExport, EstadoExport, interpretar_estado
 from app.gee.registro_exports import RegistroExports, nueva_entrada
 from app.ui.gestor_exports import GestorExports
@@ -64,6 +64,15 @@ def sesiones(monkeypatch):
     return llamadas
 
 
+@pytest.fixture
+def init_ok(monkeypatch):
+    """Sesión ya inicializable sin OAuth (camino de recuperar())."""
+    intentos = []
+    monkeypatch.setattr(config, "leer_project", lambda: "proj")
+    monkeypatch.setattr(auth, "intentar_inicializar", lambda p: intentos.append(p) or True)
+    return intentos
+
+
 def _gestor(tmp_path, exp, pool=None):
     reg = RegistroExports(tmp_path / "exports.json")
     if isinstance(exp, FakeExportador) and exp._registro is None:
@@ -109,18 +118,18 @@ def test_cuota_al_lanzar_no_registra_nada(qtbot, tmp_path, sesiones):
     assert exp.consultas == []
 
 
-def test_recuperar_solo_pollea_no_terminales_y_asegura_sesion(qtbot, tmp_path, sesiones):
+def test_recuperar_solo_pollea_no_terminales_sin_oauth(qtbot, tmp_path, sesiones, init_ok):
     exp = FakeExportador(estados=("COMPLETED",))
     g = _gestor(tmp_path, exp)
     g.registro.agregar(nueva_entrada("viejo", "a", "drive", None, estado="completado"))
     g.registro.agregar(nueva_entrada("vivo", "b", "drive", None, estado="corriendo"))
     assert g.recuperar() == 1
     assert exp.consultas == ["vivo"]
-    assert len(sesiones) == 1
+    assert sesiones == [] and init_ok == ["proj"]   # intentar_inicializar, nunca asegurar_sesion
     assert g.registro.obtener("vivo")["estado"] == "completado"
 
 
-def test_id_expirado_queda_desconocido(qtbot, tmp_path, sesiones):
+def test_id_expirado_queda_desconocido(qtbot, tmp_path, sesiones, init_ok):
     exp = FakeExportador(estados=("UNKNOWN",))
     g = _gestor(tmp_path, exp)
     g.registro.agregar(nueva_entrada("viejo", "a", "drive", None))
@@ -129,17 +138,66 @@ def test_id_expirado_queda_desconocido(qtbot, tmp_path, sesiones):
     assert g.registro.pendientes() == []
 
 
-def test_sin_sesion_no_marca_fallido_y_deja_aviso(qtbot, tmp_path, monkeypatch):
-    def sin_sesion(p=None):
-        raise auth.ErrorAuthGEE("sin project")
-    monkeypatch.setattr(auth, "asegurar_sesion", sin_sesion)
+def test_recuperar_sin_sesion_no_abre_oauth_ni_marca_fallido(qtbot, tmp_path, sesiones, monkeypatch):
+    monkeypatch.setattr(config, "leer_project", lambda: "proj")
+    monkeypatch.setattr(auth, "intentar_inicializar", lambda p: False)
     exp = FakeExportador()
+    g = _gestor(tmp_path, exp)
+    g.registro.agregar(nueva_entrada("vivo", "b", "drive", None))
+    cambios = []
+    g.cambio.connect(cambios.append)
+    g.recuperar()
+    assert sesiones == []                       # asegurar_sesion (OAuth) jamás llamado
+    assert exp.consultas == []
+    assert g.registro.obtener("vivo")["estado"] == "pendiente"   # puede seguir vivo server-side
+    assert "Sin sesión GEE" in g.aviso("vivo") and "vivo" in cambios
+
+
+def test_recuperar_sin_project_tampoco_abre_oauth(qtbot, tmp_path, sesiones, monkeypatch):
+    monkeypatch.setattr(config, "leer_project", lambda: None)
+    g = _gestor(tmp_path, FakeExportador())
+    g.registro.agregar(nueva_entrada("vivo", "b", "drive", None))
+    g.recuperar()
+    assert sesiones == [] and "Sin sesión GEE" in g.aviso("vivo")
+
+
+def test_reintentar_recuperacion_retoma_al_haber_sesion(qtbot, tmp_path, sesiones, monkeypatch):
+    estado = {"ok": False}
+    monkeypatch.setattr(config, "leer_project", lambda: "proj")
+    monkeypatch.setattr(auth, "intentar_inicializar", lambda p: estado["ok"])
+    exp = FakeExportador(estados=("COMPLETED",))
     g = _gestor(tmp_path, exp)
     g.registro.agregar(nueva_entrada("vivo", "b", "drive", None))
     g.recuperar()
     assert exp.consultas == []
-    assert g.registro.obtener("vivo")["estado"] == "pendiente"   # puede seguir vivo server-side
-    assert "Sin sesión" in g.aviso("vivo")
+    estado["ok"] = True
+    assert g.reintentar_recuperacion() == 1
+    assert exp.consultas == ["vivo"] and g.aviso("vivo") is None
+    assert g.registro.obtener("vivo")["estado"] == "completado"
+    assert g.reintentar_recuperacion() == 0
+
+
+def test_lanzar_exitoso_dispara_reintento_de_recuperacion(qtbot, tmp_path, sesiones, monkeypatch):
+    estado = {"ok": False}
+    monkeypatch.setattr(config, "leer_project", lambda: "proj")
+    monkeypatch.setattr(auth, "intentar_inicializar", lambda p: estado["ok"])
+    exp = FakeExportador(estados=("COMPLETED",))
+    g = _gestor(tmp_path, exp)
+    g.registro.agregar(nueva_entrada("viejo", "a", "drive", None))
+    g.recuperar()
+    estado["ok"] = True
+    g.lanzar(None, _CFG, clave="k1")
+    assert "viejo" in exp.consultas and g.registro.obtener("viejo")["estado"] == "completado"
+
+
+def test_poller_interactivo_usa_asegurar_sesion(qtbot, tmp_path, sesiones, monkeypatch):
+    def prohibido(p):
+        raise AssertionError("intentar_inicializar no debe usarse en el camino interactivo")
+    monkeypatch.setattr(auth, "intentar_inicializar", prohibido)
+    exp = FakeExportador(estados=("COMPLETED",))
+    g = _gestor(tmp_path, exp)
+    g.lanzar(None, _CFG, clave="k1")            # export lanzado por el usuario
+    assert sesiones and exp.consultas == ["T1"]   # asegurar_sesion sí se usa
 
 
 def test_cancelar_llama_cancelar_por_id(qtbot, tmp_path, sesiones):
@@ -151,7 +209,7 @@ def test_cancelar_llama_cancelar_por_id(qtbot, tmp_path, sesiones):
     assert g.registro.obtener("vivo")["estado"] == EstadoExport.CANCELADO.value
 
 
-def test_cancelar_sobre_poller_vivo_reusa_el_poller(qtbot, tmp_path, sesiones):
+def test_cancelar_sobre_poller_vivo_reusa_el_poller(qtbot, tmp_path, sesiones, init_ok):
     pool = PoolInerte()
     exp = FakeExportador(estados=("RUNNING",))
     g = _gestor(tmp_path, exp, pool=pool)

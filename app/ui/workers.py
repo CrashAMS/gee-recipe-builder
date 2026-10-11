@@ -10,7 +10,7 @@ from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 from app.dominio import catalogo
 from app.dominio.errores import FiltroNubesNoDisponible
 from app.dominio.receta import Receta
-from app.gee import auth, ejecutor
+from app.gee import auth, config, ejecutor
 from app.gee.auth import ErrorAuthGEE
 from app.gee.errores import ErrorEjecucionGEE
 from app.gee.exportador import ConfigExport, ExportadorGEE, es_error_de_cuota
@@ -210,6 +210,7 @@ class SenalesExport(QObject):
     progreso = Signal(str, object)   # (task_id, ProgresoExport) en cada poll
     fallo = Signal(str, str)         # PollerTask: (task_id, msg) · WorkerLanzarExport: (clave, msg)
     finalizado = Signal(str)         # (clave del worker) — SIEMPRE, sea cual sea el desenlace
+    sin_sesion = Signal(str)         # PollerTask no interactivo: (task_id) — no hay sesión GEE, sin OAuth
 
 
 class WorkerLanzarExport(QRunnable):
@@ -251,19 +252,23 @@ class WorkerLanzarExport(QRunnable):
 
 class PollerTask(QRunnable):
     """Sigue un task por id hasta estado terminal (sirve tras reiniciar la app).
-    Llama `auth.asegurar_sesion` antes de consultar. Dos flags distintos (decisión 6 F5):
+    Interactivo (default, export lanzado por el usuario): `auth.asegurar_sesion` antes de
+    consultar (puede abrir el login OAuth). No interactivo (`recuperar()` al abrir la app):
+    solo `auth.intentar_inicializar`; sin sesión emite `sin_sesion` y termina sin fallar el
+    task ni abrir el browser. Dos flags distintos (decisión 6 F5):
     `detener()` solo corta el polling local (cerrar app) — el task sigue server-side;
     `solicitar_cancelacion()` cancela server-side (`cancelar_por_id`) y sigue poleando
     hasta ver el estado terminal. `finalizado(task_id)` siempre en `finally`."""
 
     def __init__(self, task_id: str, project_id: str | None = None,
                  exportador: ExportadorGEE | None = None,
-                 intervalo_ms: int = _INTERVALO_POLL_MS) -> None:
+                 intervalo_ms: int = _INTERVALO_POLL_MS, interactivo: bool = True) -> None:
         super().__init__()
         self.setAutoDelete(False)
         self.task_id = task_id
         self.clave = task_id
         self.project_id = project_id
+        self.interactivo = interactivo
         self._exportador = exportador or ExportadorGEE()
         self._intervalo_ms = intervalo_ms
         self._detener = threading.Event()
@@ -296,7 +301,13 @@ class PollerTask(QRunnable):
         cancel_enviado = False
         try:
             with _LOCK_SESION:
-                auth.asegurar_sesion(self.project_id)
+                if self.interactivo:
+                    auth.asegurar_sesion(self.project_id)
+                else:
+                    project = self.project_id or config.leer_project()
+                    if not project or not auth.intentar_inicializar(project):
+                        self.senales.sin_sesion.emit(self.task_id)
+                        return
             while not self._detener.is_set():
                 if self._cancelar.is_set() and not cancel_enviado:
                     try:
