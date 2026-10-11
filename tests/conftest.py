@@ -37,9 +37,15 @@ def shp_sin_prj(tmp_path):
 
 
 @pytest.fixture(autouse=True)
-def _sin_worker_conteo_real(monkeypatch):
+def _sin_worker_conteo_real(monkeypatch, tmp_path):
     """Ningun test de ventana debe tocar GEE: el WorkerConteo real se reemplaza por
-    un QRunnable inerte (los tests que lo necesitan lo parchean por su cuenta)."""
+    un QRunnable inerte (los tests que lo necesitan lo parchean por su cuenta).
+    Ademas aisla `config._dir_config()` (F5): `exports.json`/`config.json` van a un
+    tmp vacio, asi la recuperacion de exports al abrir la ventana nunca encuentra
+    pendientes ni dispara GEE, y ningun test pisa la config real del usuario."""
+    dir_cfg = tmp_path / "_appdata"
+    monkeypatch.setenv("APPDATA", str(dir_cfg))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(dir_cfg))
     from PySide6.QtCore import QRunnable
     from app.ui import ventana_principal
     from app.ui.workers import SenalesConteo

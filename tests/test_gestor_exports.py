@@ -1,0 +1,206 @@
+"""Tests de GestorExports + PollerTask/WorkerLanzarExport (F5). Exportador fake, pool
+sincrónico (o inerte) e intervalo 0: nada toca GEE ni hilos reales."""
+from types import SimpleNamespace
+
+import pytest
+
+from app.gee import auth
+from app.gee.exportador import ConfigExport, DestinoExport, EstadoExport, interpretar_estado
+from app.gee.registro_exports import RegistroExports, nueva_entrada
+from app.ui.gestor_exports import GestorExports
+from app.ui.workers import PollerTask, WorkerLanzarExport
+
+_CFG = ConfigExport(descripcion="ndvi_x", prefijo_archivo="ndvi_x", destino=DestinoExport.DRIVE,
+                    region=None, carpeta_drive="GEE", scale=10.0)
+
+
+class PoolSync:
+    """Corre el worker en el acto, en el hilo actual (señales → conexión directa)."""
+    def start(self, w):
+        w.run()
+
+
+class PoolInerte:
+    def __init__(self):
+        self.workers = []
+
+    def start(self, w):
+        self.workers.append(w)
+
+
+class FakeExportador:
+    def __init__(self, estados=("RUNNING", "COMPLETED"), lanzar_exc=None, registro=None):
+        self._estados = list(estados)
+        self._lanzar_exc = lanzar_exc
+        self._registro = registro
+        self.consultas = []
+        self.cancelados = []
+        self.registrado_al_primer_poll = None
+
+    def lanzar(self, image, cfg):
+        if self._lanzar_exc:
+            raise self._lanzar_exc
+        return SimpleNamespace(id="T1")
+
+    def estado_por_id(self, task_id):
+        if self._registro is not None and self.registrado_al_primer_poll is None:
+            self.registrado_al_primer_poll = self._registro.obtener(task_id) is not None
+        self.consultas.append(task_id)
+        crudo = self._estados.pop(0) if len(self._estados) > 1 else self._estados[0]
+        st = {"state": crudo, "id": task_id}
+        if crudo == "COMPLETED":
+            st["destination_uris"] = ["https://drive/x"]
+        return interpretar_estado(st)
+
+    def cancelar_por_id(self, task_id):
+        self.cancelados.append(task_id)
+        self._estados = ["CANCELLED"]
+
+
+@pytest.fixture
+def sesiones(monkeypatch):
+    llamadas = []
+    monkeypatch.setattr(auth, "asegurar_sesion", lambda p=None: llamadas.append(p) or "proj")
+    return llamadas
+
+
+def _gestor(tmp_path, exp, pool=None):
+    reg = RegistroExports(tmp_path / "exports.json")
+    if isinstance(exp, FakeExportador) and exp._registro is None:
+        exp._registro = reg
+    return GestorExports(registro=reg, exportador=exp, pool=pool or PoolSync(), intervalo_ms=0)
+
+
+def test_workers_no_autodelete():
+    assert WorkerLanzarExport(None, _CFG).autoDelete() is False
+    assert PollerTask("T1").autoDelete() is False
+
+
+def test_lanzar_registra_el_id_antes_del_primer_poll(qtbot, tmp_path, sesiones):
+    exp = FakeExportador()
+    g = _gestor(tmp_path, exp)
+    lanzados = []
+    g.lanzado.connect(lambda clave, tid: lanzados.append((clave, tid)))
+    clave = g.lanzar(None, _CFG, clave="k1")
+    assert clave == "k1" and lanzados == [("k1", "T1")]
+    assert exp.registrado_al_primer_poll is True
+    e = g.registro.obtener("T1")
+    assert e["nombre"] == "ndvi_x" and e["destino"] == "drive" and e["carpeta"] == "GEE"
+
+
+def test_completado_actualiza_estado_y_uris(qtbot, tmp_path, sesiones):
+    exp = FakeExportador(estados=("READY", "RUNNING", "COMPLETED"))
+    g = _gestor(tmp_path, exp)
+    g.lanzar(None, _CFG)
+    e = g.registro.obtener("T1")
+    assert e["estado"] == EstadoExport.COMPLETADO.value and e["uris"] == ["https://drive/x"]
+    assert exp.consultas == ["T1"] * 3
+    assert not g.siguiendo("T1")
+
+
+def test_cuota_al_lanzar_no_registra_nada(qtbot, tmp_path, sesiones):
+    exp = FakeExportador(lanzar_exc=RuntimeError("Too many tasks already in the queue"))
+    g = _gestor(tmp_path, exp)
+    fallos = []
+    g.fallo_lanzamiento.connect(lambda clave, msg: fallos.append((clave, msg)))
+    g.lanzar(None, _CFG, clave="k1")
+    assert g.registro.listar() == []
+    assert fallos and fallos[0][0] == "k1" and "Cuota" in fallos[0][1]
+    assert exp.consultas == []
+
+
+def test_recuperar_solo_pollea_no_terminales_y_asegura_sesion(qtbot, tmp_path, sesiones):
+    exp = FakeExportador(estados=("COMPLETED",))
+    g = _gestor(tmp_path, exp)
+    g.registro.agregar(nueva_entrada("viejo", "a", "drive", None, estado="completado"))
+    g.registro.agregar(nueva_entrada("vivo", "b", "drive", None, estado="corriendo"))
+    assert g.recuperar() == 1
+    assert exp.consultas == ["vivo"]
+    assert len(sesiones) == 1
+    assert g.registro.obtener("vivo")["estado"] == "completado"
+
+
+def test_id_expirado_queda_desconocido(qtbot, tmp_path, sesiones):
+    exp = FakeExportador(estados=("UNKNOWN",))
+    g = _gestor(tmp_path, exp)
+    g.registro.agregar(nueva_entrada("viejo", "a", "drive", None))
+    g.recuperar()
+    assert g.registro.obtener("viejo")["estado"] == EstadoExport.DESCONOCIDO.value
+    assert g.registro.pendientes() == []
+
+
+def test_sin_sesion_no_marca_fallido_y_deja_aviso(qtbot, tmp_path, monkeypatch):
+    def sin_sesion(p=None):
+        raise auth.ErrorAuthGEE("sin project")
+    monkeypatch.setattr(auth, "asegurar_sesion", sin_sesion)
+    exp = FakeExportador()
+    g = _gestor(tmp_path, exp)
+    g.registro.agregar(nueva_entrada("vivo", "b", "drive", None))
+    g.recuperar()
+    assert exp.consultas == []
+    assert g.registro.obtener("vivo")["estado"] == "pendiente"   # puede seguir vivo server-side
+    assert "Sin sesión" in g.aviso("vivo")
+
+
+def test_cancelar_llama_cancelar_por_id(qtbot, tmp_path, sesiones):
+    exp = FakeExportador(estados=("RUNNING",))
+    g = _gestor(tmp_path, exp)
+    g.registro.agregar(nueva_entrada("vivo", "b", "drive", None))
+    g.cancelar("vivo")
+    assert exp.cancelados == ["vivo"]
+    assert g.registro.obtener("vivo")["estado"] == EstadoExport.CANCELADO.value
+
+
+def test_cancelar_sobre_poller_vivo_reusa_el_poller(qtbot, tmp_path, sesiones):
+    pool = PoolInerte()
+    exp = FakeExportador(estados=("RUNNING",))
+    g = _gestor(tmp_path, exp, pool=pool)
+    g.registro.agregar(nueva_entrada("vivo", "b", "drive", None))
+    g.recuperar()
+    assert g.siguiendo("vivo")
+    g.cancelar("vivo")
+    assert len(pool.workers) == 1   # no arranca un segundo poller
+    pool.workers[0].run()
+    assert exp.cancelados == ["vivo"]
+
+
+def test_detener_todo_no_cancela(qtbot, tmp_path, sesiones):
+    pool = PoolInerte()
+    exp = FakeExportador(estados=("RUNNING",))
+    g = _gestor(tmp_path, exp, pool=pool)
+    g.registro.agregar(nueva_entrada("vivo", "b", "drive", None))
+    g.recuperar()
+    cambios = []
+    g.cambio.connect(cambios.append)
+    g.detener_todo()
+    pool.workers[0].run()   # el poller "sigue" en el pool tras detener: sale sin cancelar
+    assert exp.cancelados == []
+    assert exp.consultas == []
+    assert cambios == []     # desconectado: no le habla más al gestor
+    assert g.registro.obtener("vivo")["estado"] == "pendiente"
+
+
+def test_cancelar_fallido_sigue_poleando(qtbot, tmp_path, sesiones):
+    exp = FakeExportador(estados=("RUNNING", "COMPLETED"))
+
+    def boom(_tid):
+        raise RuntimeError("sin permiso")
+    exp.cancelar_por_id = boom
+    g = _gestor(tmp_path, exp)
+    g.registro.agregar(nueva_entrada("vivo", "b", "drive", None))
+    g.cancelar("vivo")
+    assert exp.consultas == ["vivo", "vivo"]   # no abandona el task vivo
+    assert g.registro.obtener("vivo")["estado"] == "completado"
+
+
+def test_registro_no_escribible_no_mata_el_seguimiento(qtbot, tmp_path, sesiones, monkeypatch):
+    exp = FakeExportador(estados=("COMPLETED",))
+    g = _gestor(tmp_path, exp)
+
+    def lleno(_e):
+        raise OSError("disco lleno")
+    monkeypatch.setattr(g.registro, "agregar", lleno)
+    lanzados = []
+    g.lanzado.connect(lambda c, t: lanzados.append(t))
+    g.lanzar(None, _CFG)
+    assert lanzados == ["T1"] and exp.consultas == ["T1"]

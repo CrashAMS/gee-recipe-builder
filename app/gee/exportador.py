@@ -30,6 +30,7 @@ class EstadoExport(str, Enum):
     COMPLETADO = "completado"  # COMPLETED
     FALLIDO = "fallido"        # FAILED
     CANCELADO = "cancelado"    # CANCEL_REQUESTED / CANCELLED
+    DESCONOCIDO = "desconocido"  # UNKNOWN: getTaskStatus no encuentra el id (expirado / otro project)
 
 
 # Estados crudos de ee.batch.Task.State -> estado de dominio de la app.
@@ -41,9 +42,11 @@ _MAPA_ESTADOS = {
     "FAILED": EstadoExport.FALLIDO,
     "CANCEL_REQUESTED": EstadoExport.CANCELADO,
     "CANCELLED": EstadoExport.CANCELADO,
+    "UNKNOWN": EstadoExport.DESCONOCIDO,
 }
 
-_TERMINALES = {EstadoExport.COMPLETADO, EstadoExport.FALLIDO, EstadoExport.CANCELADO}
+_TERMINALES = {EstadoExport.COMPLETADO, EstadoExport.FALLIDO, EstadoExport.CANCELADO,
+               EstadoExport.DESCONOCIDO}
 
 # Patrones de error de cuota / límite de la Task API (aparecen tanto en la
 # EEException de task.start() como en error_message de un status FAILED).
@@ -156,3 +159,18 @@ class ExportadorGEE:
             task.cancel()
         except Exception:
             pass
+
+    # --- Por id (F5): recuperar/cancelar tasks tras reiniciar la app, sin el objeto Task ---
+    @staticmethod
+    def estado_por_id(task_id: str) -> ProgresoExport:
+        """Estado de un task por id vía `ee.data.getTaskStatus` (misma forma que
+        `task.status()`; id inexistente → `UNKNOWN` → `DESCONOCIDO`). Requiere sesión."""
+        status = dict(ee.data.getTaskStatus([task_id])[0])
+        status.setdefault("id", task_id)
+        return interpretar_estado(status)
+
+    @staticmethod
+    def cancelar_por_id(task_id: str) -> None:
+        """Cancela server-side por id. A diferencia de `cancelar`, re-levanta: la
+        cancelación explícita del panel tiene que poder informar el fallo."""
+        ee.data.cancelTask(task_id)

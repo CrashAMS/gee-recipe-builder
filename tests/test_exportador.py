@@ -95,3 +95,41 @@ def test_construir_task_cloud_storage_pasa_bucket_y_no_folder(monkeypatch):
     assert task == "TASK_GCS"
     assert capturado["bucket"] == "mi-bucket"
     assert "folder" not in capturado
+
+
+# --- F5: estado/cancelación por id ---
+def test_unknown_es_desconocido_terminal_no_ok():
+    p = interpretar_estado({"state": "UNKNOWN", "id": "x"})
+    assert p.estado is EstadoExport.DESCONOCIDO
+    assert p.terminal and not p.ok
+
+
+def test_estado_por_id_usa_get_task_status(monkeypatch):
+    import ee
+    from app.gee.exportador import ExportadorGEE
+    llamadas = []
+
+    def fake_status(ids):
+        llamadas.append(ids)
+        return [{"state": "COMPLETED", "destination_uris": ["https://drive/x"]}]
+
+    monkeypatch.setattr(ee.data, "getTaskStatus", fake_status)
+    p = ExportadorGEE.estado_por_id("T1")
+    assert llamadas == [["T1"]]
+    assert p.ok and p.task_id == "T1" and p.uris_destino == ("https://drive/x",)
+
+
+def test_cancelar_por_id_usa_cancel_task_y_relevanta(monkeypatch):
+    import ee
+    from app.gee.exportador import ExportadorGEE
+    llamadas = []
+    monkeypatch.setattr(ee.data, "cancelTask", lambda tid: llamadas.append(tid))
+    ExportadorGEE.cancelar_por_id("T1")
+    assert llamadas == ["T1"]
+
+    def boom(_tid):
+        raise RuntimeError("sin permiso")
+
+    monkeypatch.setattr(ee.data, "cancelTask", boom)
+    with pytest.raises(RuntimeError):
+        ExportadorGEE.cancelar_por_id("T1")

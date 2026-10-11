@@ -1,90 +1,183 @@
-"""Tests de FIX-3 (race Qt en Cancelar) y FIX-4 (closeEvent huérfano) —
-audit de cierre de gee-recipe-builder, bloqueantes B3/B4. Headless con
-pytest-qt (mismo patrón offscreen que test_ui_smoke.py); nada de esto toca
-GEE real: `QThreadPool.start` se mockea, así que `ExportPollingWorker.run()`
-nunca corre en estos tests."""
+"""Diálogo de export + panel de exports (F5). Headless (offscreen). El diálogo ya no
+es dueño del export: lanza vía GestorExports y cerrarlo NO cancela nada (reemplaza
+los tests de cancel-on-close de B3/B4, que dejaron de aplicar)."""
 from unittest.mock import MagicMock
 
-from PySide6.QtCore import QThreadPool
+from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtWidgets import QMessageBox
 
-from app.gee.exportador import ConfigExport, DestinoExport, EstadoExport, ProgresoExport
+from app.gee.registro_exports import RegistroExports, nueva_entrada
 from app.ui.dialogos.dialogo_export import DialogoExportDrive
-from app.ui.workers import ExportPollingWorker
-
-_CFG = ConfigExport(descripcion="d", prefijo_archivo="p", destino=DestinoExport.DRIVE,
-                     region=None, scale=10.0)
+from app.ui.panel_exports import PanelExports
 
 
-def _prog(estado: EstadoExport, **kw) -> ProgresoExport:
-    base = dict(estado=estado, crudo=estado.name, mensaje_error=None, task_id="t1")
-    base.update(kw)
-    return ProgresoExport(**base)
+class GestorFake(QObject):
+    cambio = Signal(str)
+    lanzado = Signal(str, str)
+    fallo_lanzamiento = Signal(str, str)
+
+    def __init__(self, registro=None):
+        super().__init__()
+        self.registro = registro
+        self.lanzamientos = []
+        self.cancelados = []
+        self.detenidos = 0
+
+    def lanzar(self, image, cfg, clave=None):
+        self.lanzamientos.append((image, cfg, clave))
+        return clave
+
+    def cancelar(self, task_id):
+        self.cancelados.append(task_id)
+
+    def detener_todo(self):
+        self.detenidos += 1
+
+    def siguiendo(self, task_id):
+        return True
+
+    def aviso(self, task_id):
+        return None
 
 
-def test_export_polling_worker_no_autodelete():
-    # FIX-3: el pool no puede borrar el QRunnable mientras el diálogo retiene
-    # `self._worker` — sin esto, "Cancelar" puede tocar un objeto ya destruido.
-    w = ExportPollingWorker(image=None, cfg=_CFG)
-    assert w.autoDelete() is False
-
-
-def _dialogo(qtbot, monkeypatch):
-    # No arrancar el worker en un thread real: sólo interesa el wiring Qt.
-    monkeypatch.setattr(QThreadPool, "globalInstance",
-                        staticmethod(lambda: MagicMock(start=lambda w: None)))
-    dlg = DialogoExportDrive(image=None, region=None)
+def _dialogo(qtbot, gestor=None):
+    gestor = gestor or GestorFake()
+    dlg = DialogoExportDrive(image="IMG", region="REG", gestor=gestor, sugerencia_nombre="ndvi_x")
     qtbot.addWidget(dlg)
-    dlg._on_exportar()   # crea self._worker y habilita Cancelar
-    return dlg
+    return dlg, gestor
 
 
-def test_cancelar_se_deshabilita_en_completado_no_solo_en_finalizado(qtbot, monkeypatch):
-    dlg = _dialogo(qtbot, monkeypatch)
-    assert dlg._btn_cancelar.isEnabled()
-    dlg._on_completado(_prog(EstadoExport.COMPLETADO, uris_destino=("https://drive/x",)))
-    # FIX-3: deshabilitado ya en _on_completado, antes de que llegue `finalizado`.
-    assert not dlg._btn_cancelar.isEnabled()
-    assert dlg._terminado is True
+def test_exportar_delega_al_gestor(qtbot):
+    dlg, g = _dialogo(qtbot)
+    dlg._on_exportar()
+    assert len(g.lanzamientos) == 1
+    image, cfg, clave = g.lanzamientos[0]
+    assert image == "IMG" and cfg.region == "REG" and cfg.descripcion == "ndvi_x"
+    assert clave == dlg._clave and clave
+    g.lanzado.emit(clave, "T1")
+    assert "T1" in dlg._label_estado.text() and "panel" in dlg._label_estado.text()
 
 
-def test_cancelar_se_deshabilita_en_fallo(qtbot, monkeypatch):
-    dlg = _dialogo(qtbot, monkeypatch)
-    dlg._on_fallo("cuota excedida")
-    assert not dlg._btn_cancelar.isEnabled()
-    assert dlg._terminado is True
+def test_lanzado_de_otro_dialogo_se_ignora(qtbot):
+    dlg, g = _dialogo(qtbot)
+    dlg._on_exportar()
+    g.lanzado.emit("otra-clave", "T9")
+    assert "T9" not in dlg._label_estado.text()
 
 
-def test_close_event_cancela_export_en_curso(qtbot, monkeypatch):
-    # FIX-4: cerrar (X / closeEvent) con un export en curso no debe dejar el
-    # polling huérfano — cancela server-side antes de aceptar el cierre.
-    dlg = _dialogo(qtbot, monkeypatch)
-    dlg._worker.solicitar_cancelacion = MagicMock()
+def test_fallo_de_lanzamiento_rehabilita_exportar(qtbot):
+    dlg, g = _dialogo(qtbot)
+    dlg._on_exportar()
+    assert not dlg._btn_exportar.isEnabled()
+    g.fallo_lanzamiento.emit(dlg._clave, "Cuota excedida")
+    assert dlg._btn_exportar.isEnabled() and "Cuota" in dlg._label_estado.text()
+
+
+def test_cerrar_no_cancela(qtbot):
+    dlg, g = _dialogo(qtbot)
+    dlg._on_exportar()
+    dlg.show()
     dlg.close()
-    dlg._worker.solicitar_cancelacion.assert_called_once()
+    assert g.cancelados == [] and g.detenidos == 0
 
 
-def test_reject_cancela_export_en_curso(qtbot, monkeypatch):
-    # FIX-4: Escape / botón "Cerrar" llaman reject() directo, sin pasar por
-    # closeEvent — mismo fix debe cubrir ese camino.
-    dlg = _dialogo(qtbot, monkeypatch)
-    dlg._worker.solicitar_cancelacion = MagicMock()
-    dlg.reject()
-    dlg._worker.solicitar_cancelacion.assert_called_once()
+def test_escape_no_cancela(qtbot):
+    dlg, g = _dialogo(qtbot)
+    dlg._on_exportar()
+    dlg.show()
+    qtbot.keyClick(dlg, Qt.Key.Key_Escape)
+    assert not dlg.isVisible()
+    assert g.cancelados == [] and g.detenidos == 0
 
 
-def test_close_event_no_cancela_si_ya_termino(qtbot, monkeypatch):
-    # Con el export ya en estado terminal, cerrar no debe re-disparar la cancelación.
-    dlg = _dialogo(qtbot, monkeypatch)
-    dlg._on_completado(_prog(EstadoExport.COMPLETADO))
-    dlg._worker.solicitar_cancelacion = MagicMock()
-    dlg.close()
-    dlg._worker.solicitar_cancelacion.assert_not_called()
+def test_dialogo_no_tiene_boton_cancelar(qtbot):
+    dlg, _ = _dialogo(qtbot)
+    assert not hasattr(dlg, "_btn_cancelar")
 
 
-def test_close_event_sin_worker_no_rompe(qtbot, monkeypatch):
-    # Cerrar sin haber lanzado ningún export (self._worker is None) no debe crashear.
-    monkeypatch.setattr(QThreadPool, "globalInstance",
-                        staticmethod(lambda: MagicMock(start=lambda w: None)))
-    dlg = DialogoExportDrive(image=None, region=None)
-    qtbot.addWidget(dlg)
-    dlg.close()   # no debe lanzar excepción
+# --- Panel de exports ---
+def _panel(qtbot, tmp_path):
+    reg = RegistroExports(tmp_path / "exports.json")
+    reg.agregar(nueva_entrada("hecho", "viejo", "drive", "GEE", estado="completado"))
+    reg.actualizar_estado("hecho", "completado", uris=["https://drive/x"])
+    reg.agregar(nueva_entrada("vivo", "nuevo", "cloud_storage", "bkt", estado="corriendo"))
+    g = GestorFake(reg)
+    panel = PanelExports(g)
+    qtbot.addWidget(panel)
+    return panel, g
+
+
+def test_panel_lista_desde_el_registro(qtbot, tmp_path):
+    panel, _ = _panel(qtbot, tmp_path)
+    assert panel.tabla.rowCount() == 2
+    assert panel.tabla.item(0, 0).text() == "nuevo"
+    assert panel.tabla.item(0, 1).text() == "Cloud Storage: bkt"
+    assert panel.tabla.item(1, 3).text() == "completado"
+    assert panel.tabla.cellWidget(1, 4) is not None     # link "abrir" del completado
+
+
+def test_panel_cancelar_deshabilitado_en_terminales(qtbot, tmp_path):
+    panel, _ = _panel(qtbot, tmp_path)
+    panel.tabla.selectRow(1)   # completado
+    assert not panel.btn_cancelar.isEnabled()
+    panel.tabla.selectRow(0)   # corriendo
+    assert panel.btn_cancelar.isEnabled()
+
+
+def test_panel_cancelar_pide_confirmacion(qtbot, tmp_path, monkeypatch):
+    panel, g = _panel(qtbot, tmp_path)
+    panel.tabla.selectRow(0)
+    monkeypatch.setattr(QMessageBox, "question",
+                        MagicMock(return_value=QMessageBox.StandardButton.No))
+    panel.btn_cancelar.click()
+    assert g.cancelados == []
+    monkeypatch.setattr(QMessageBox, "question",
+                        MagicMock(return_value=QMessageBox.StandardButton.Yes))
+    panel.btn_cancelar.click()
+    assert g.cancelados == ["vivo"]
+
+
+def test_panel_refresca_en_cambio(qtbot, tmp_path):
+    panel, g = _panel(qtbot, tmp_path)
+    g.registro.actualizar_estado("vivo", "completado")
+    g.cambio.emit("vivo")
+    assert panel.tabla.item(0, 3).text() == "completado"
+
+
+# --- Ventana: recuperación al abrir y cierre ---
+def _ventana(qtbot, monkeypatch, con_project=True):
+    from app.gee import config
+    from app.ui.ventana_principal import VentanaPrincipal
+    monkeypatch.setattr(config, "hay_project_configurado", lambda: con_project)
+    v = VentanaPrincipal()
+    qtbot.addWidget(v)
+    return v
+
+
+def test_ventana_recupera_pendientes_y_cierra_sin_cancelar(qtbot, mapa_stub, monkeypatch):
+    v = _ventana(qtbot, monkeypatch)
+    g = v.gestor_exports
+    g.registro.agregar(nueva_entrada("vivo", "b", "drive", None))
+    g.recuperar = MagicMock(return_value=1)
+    g.cancelar = MagicMock()
+    v._recuperar_exports()
+    g.recuperar.assert_called_once()
+    v.close()
+    g.cancelar.assert_not_called()
+
+
+def test_ventana_sin_project_no_recupera(qtbot, mapa_stub, monkeypatch):
+    v = _ventana(qtbot, monkeypatch, con_project=False)
+    g = v.gestor_exports
+    g.registro.agregar(nueva_entrada("vivo", "b", "drive", None))
+    g.recuperar = MagicMock()
+    v._recuperar_exports()
+    g.recuperar.assert_not_called()
+
+
+def test_ventana_registro_aislado_en_tests(qtbot, mapa_stub, monkeypatch, tmp_path):
+    # El autouse de conftest manda _dir_config() a tmp: la recuperación diferida no
+    # encuentra pendientes reales del usuario.
+    v = _ventana(qtbot, monkeypatch)
+    assert str(tmp_path) in str(v.gestor_exports.registro.ruta)
+    assert v.gestor_exports.registro.pendientes() == []

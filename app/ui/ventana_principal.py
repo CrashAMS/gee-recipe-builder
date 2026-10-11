@@ -20,6 +20,8 @@ from app.gee import config
 from app.mapa.preview import PALETAS, paleta_por_dominio, vis_para_leyenda
 from app.mapa.widget_mapa import QtWebEngineNoDisponible, WidgetMapa
 from app.ui.dialogos.dialogo_export import DialogoExportDrive
+from app.ui.gestor_exports import GestorExports
+from app.ui.panel_exports import PanelExports
 from app.ui.panel_formulario import PanelFormulario
 from app.ui.visor_script import VisorScript
 from app.ui.workers import (
@@ -106,6 +108,14 @@ class VentanaPrincipal(QMainWindow):
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 0)
         self.setCentralWidget(splitter)
+        # Exports (F5): el gestor es dueño del ciclo de vida (sobrevive al diálogo);
+        # el panel es un dock no modal oculto por defecto (Ver → Exports).
+        self.gestor_exports = GestorExports(parent=self)
+        self.gestor_exports.lanzado.connect(self._on_export_lanzado)
+        self.gestor_exports.fallo_lanzamiento.connect(self._on_export_fallo_lanzamiento)
+        self.panel_exports = PanelExports(self.gestor_exports, self)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.panel_exports)
+        self.panel_exports.hide()
         self._armar_menu()
 
         self._override_vis = False      # True: el preview usa min/max de los spinbox (sin stretch)
@@ -144,6 +154,8 @@ class VentanaPrincipal(QMainWindow):
         self.spin_max.valueChanged.connect(self._on_rango_manual)
         self.btn_auto.clicked.connect(self._on_auto)
         self._sincronizar_paleta_dominio()
+        # Recuperación de exports pendientes, diferida para no demorar la apertura.
+        QTimer.singleShot(0, self, self._recuperar_exports)
 
         print("VentanaPrincipal lista — form poblado, visor inicializado, mapa embebido")
 
@@ -157,6 +169,8 @@ class VentanaPrincipal(QMainWindow):
         act_abrir.triggered.connect(self._abrir_receta)
         self._menu_recientes = menu.addMenu("Recientes")
         self._menu_recientes.aboutToShow.connect(self._rebuild_recientes)
+        menu_ver = self.menuBar().addMenu("&Ver")
+        menu_ver.addAction(self.panel_exports.toggleViewAction())
 
     def _rebuild_recientes(self) -> None:
         self._menu_recientes.clear()
@@ -338,9 +352,26 @@ class VentanaPrincipal(QMainWindow):
         imagen, region = payload
         receta = self._receta_export_en_curso
         nombre = f"{receta.indice}_{receta.fecha_inicio}_{receta.fecha_fin}"
-        dlg = DialogoExportDrive(imagen, region, sugerencia_nombre=nombre,
+        dlg = DialogoExportDrive(imagen, region, self.gestor_exports, sugerencia_nombre=nombre,
                                  scale=receta.escala, parent=self)
-        dlg.exec()
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dlg.show()   # no modal (F5): cerrarlo no afecta al export
+
+    def _recuperar_exports(self) -> None:
+        """Retoma el seguimiento de exports no terminales del registro (F5). Sin project
+        no hay sesión posible: se saltea en silencio."""
+        if not config.hay_project_configurado() or not self.gestor_exports.registro.pendientes():
+            return
+        n = self.gestor_exports.recuperar()
+        self.panel_exports.show()
+        self.statusBar().showMessage(f"Retomando el seguimiento de {n} export(s) pendiente(s)", 8000)
+
+    def _on_export_lanzado(self, _clave: str, task_id: str) -> None:
+        self.panel_exports.show()
+        self.statusBar().showMessage(f"Export lanzado (task {task_id}) — ver panel Exports", 8000)
+
+    def _on_export_fallo_lanzamiento(self, _clave: str, mensaje: str) -> None:
+        self.statusBar().showMessage(f"No se pudo lanzar el export: {mensaje.splitlines()[0]}", 10000)
 
     def _on_error_export(self, tipo: str, mensaje: str) -> None:
         QMessageBox.critical(self, f"Error al preparar el export ({tipo})", mensaje)
@@ -449,6 +480,8 @@ class VentanaPrincipal(QMainWindow):
         self.btn_preview.setText("Refrescar preview")
 
     def closeEvent(self, event) -> None:
+        # Solo corta el polling local: los tasks siguen en GEE y se retoman al reabrir.
+        self.gestor_exports.detener_todo()
         self._mapa.close()  # detiene el ServidorMapa (widget no top-level: close() igual dispara closeEvent)
         super().closeEvent(event)
 

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import threading
-import time
+import uuid
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
@@ -194,91 +194,125 @@ class WorkerConstruirImagenExport(QRunnable):
 _INTERVALO_POLL_MS = 10_000  # 10 s entre consultas de status (DEC-4 de F0). Configurable.
 _PASO_SLEEP_MS = 500         # granularidad del sleep interrumpible
 
+# Varios PollerTask recuperados al abrir la app arrancan a la vez: serializar la sesión
+# evita Initialize concurrentes y más de un flujo OAuth en el browser.
+_LOCK_SESION = threading.Lock()
+
+_MSG_CUOTA = ("Cuota de tasks de GEE excedida. Esperá a que terminen tasks "
+              "en curso o cancelá alguna e intentá de nuevo.\n\nDetalle: {exc}")
+
 
 class SenalesExport(QObject):
-    """Señales del polling de export. QRunnable no puede tener señales propias."""
-    iniciado = Signal(str)        # task_id, cuando el task arranca OK
-    progreso = Signal(object)     # ProgresoExport en cada poll
-    completado = Signal(object)   # ProgresoExport terminal OK
-    fallo = Signal(str)           # mensaje de error (cuota / FAILED / cancelado / red)
-    finalizado = Signal()         # se emite SIEMPRE (éxito o error) para rehabilitar la UI
+    """Señales de lanzamiento/polling de export (F5: cada emisión identifica su task o worker).
+    Conectarlas a métodos de un QObject del hilo Qt (GestorExports): así la conexión
+    es encolada y el registro en disco solo se escribe desde el hilo Qt."""
+    iniciado = Signal(str, object)   # (task_id, ConfigExport) — el task arrancó OK
+    progreso = Signal(str, object)   # (task_id, ProgresoExport) en cada poll
+    fallo = Signal(str, str)         # PollerTask: (task_id, msg) · WorkerLanzarExport: (clave, msg)
+    finalizado = Signal(str)         # (clave del worker) — SIEMPRE, sea cual sea el desenlace
 
 
-class ExportPollingWorker(QRunnable):
-    """Arranca un export y poolea su estado en QThreadPool, emitiendo señales Qt.
-
-    Todo el ciclo de red vive acá (DEC-4 de F0): task.start() incluido, para que
-    los errores de cuota de arranque salgan por `fallo` sin congelar la UI.
-    Usa QRunnable + QThreadPool (no QThread manual): el QThread manual perdía
-    señales y dejaba botones colgados (bug real de F3b) — `finalizado` emitido
-    en `finally` SIEMPRE rehabilita la UI, sea cual sea el desenlace."""
+class WorkerLanzarExport(QRunnable):
+    """Solo lanza el task (red incluida, para no congelar la UI) y emite `iniciado`
+    con su id; el seguimiento lo hace `PollerTask`. Requiere sesión ya inicializada
+    (la imagen viene de WorkerConstruirImagenExport). `clave` identifica al worker
+    en `fallo`/`finalizado` (todavía no hay task_id cuando falla el lanzamiento)."""
 
     def __init__(self, image, cfg: ConfigExport, exportador: ExportadorGEE | None = None,
-                 intervalo_ms: int = _INTERVALO_POLL_MS) -> None:
+                 clave: str | None = None) -> None:
         super().__init__()
-        # El diálogo retiene `self._worker` para poder cancelar (B3 del audit de
-        # cierre): sin esto, el pool borra el QRunnable C++ apenas `run()`
-        # termina y un clic en "Cancelar" en esa ventana pega contra un objeto
-        # ya destruido (RuntimeError sin capturar). El diálogo es dueño del
-        # ciclo de vida; nadie más llama a `deleteLater()` sobre este worker.
-        self.setAutoDelete(False)
+        self.setAutoDelete(False)   # el gestor retiene la referencia hasta `finalizado`
         self._image = image
         self._cfg = cfg
         self._exportador = exportador or ExportadorGEE()
-        self._intervalo_ms = intervalo_ms
-        self._cancelado = threading.Event()
+        self.clave = clave or uuid.uuid4().hex
+        self.task_id = ""           # se fija antes de emitir `iniciado`
         self.senales = SenalesExport()
-
-    def solicitar_cancelacion(self) -> None:
-        """Llamado desde el hilo Qt al presionar "Cancelar" (DEC-9 de F0)."""
-        self._cancelado.set()
-
-    def _dormir_interrumpible(self, ms: int) -> bool:
-        """Duerme hasta `ms` en pasos chicos, chequeando cancelación. True si se canceló."""
-        restante = ms
-        while restante > 0:
-            if self._cancelado.is_set():
-                return True
-            paso = min(_PASO_SLEEP_MS, restante)
-            time.sleep(paso / 1000)
-            restante -= paso
-        return False
 
     @Slot()
     def run(self) -> None:
         try:
             try:
                 task = self._exportador.lanzar(self._image, self._cfg)
-            except Exception as exc:
-                if es_error_de_cuota(exc):
-                    self.senales.fallo.emit(
-                        "Cuota de tasks de GEE excedida. Esperá a que terminen tasks "
-                        f"en curso o cancelá alguna e intentá de nuevo.\n\nDetalle: {exc}"
-                    )
-                else:
-                    self.senales.fallo.emit(str(exc))
+            except Exception as exc:  # noqa: BLE001
+                mensaje = _MSG_CUOTA.format(exc=exc) if es_error_de_cuota(exc) else str(exc)
+                self.senales.fallo.emit(self.clave, mensaje)
                 return
-
-            self.senales.iniciado.emit(getattr(task, "id", "") or "")
-
-            while True:
-                if self._cancelado.is_set():
-                    self._exportador.cancelar(task)  # cancela server-side (DEC-9)
-                    self.senales.fallo.emit("Export cancelado por el usuario.")
-                    return
-                prog = self._exportador.estado(task)
-                self.senales.progreso.emit(prog)
-                if prog.ok:
-                    self.senales.completado.emit(prog)
-                    return
-                if prog.terminal:  # FAILED / CANCELLED
-                    self.senales.fallo.emit(prog.mensaje_error or f"Export {prog.crudo}")
-                    return
-                if self._dormir_interrumpible(self._intervalo_ms):
-                    self._exportador.cancelar(task)
-                    self.senales.fallo.emit("Export cancelado por el usuario.")
-                    return
-        except Exception as exc:  # noqa: BLE001 — red caída / status ilegible a mitad del poll
-            self.senales.fallo.emit(f"Se perdió el seguimiento del export: {exc}")
+            task_id = getattr(task, "id", "") or ""
+            if not task_id:
+                self.senales.fallo.emit(self.clave,
+                                        "GEE no devolvió el id del task: no se puede seguir.")
+                return
+            self.task_id = task_id
+            self.senales.iniciado.emit(task_id, self._cfg)
         finally:
-            self.senales.finalizado.emit()
+            self.senales.finalizado.emit(self.clave)
+
+
+class PollerTask(QRunnable):
+    """Sigue un task por id hasta estado terminal (sirve tras reiniciar la app).
+    Llama `auth.asegurar_sesion` antes de consultar. Dos flags distintos (decisión 6 F5):
+    `detener()` solo corta el polling local (cerrar app) — el task sigue server-side;
+    `solicitar_cancelacion()` cancela server-side (`cancelar_por_id`) y sigue poleando
+    hasta ver el estado terminal. `finalizado(task_id)` siempre en `finally`."""
+
+    def __init__(self, task_id: str, project_id: str | None = None,
+                 exportador: ExportadorGEE | None = None,
+                 intervalo_ms: int = _INTERVALO_POLL_MS) -> None:
+        super().__init__()
+        self.setAutoDelete(False)
+        self.task_id = task_id
+        self.clave = task_id
+        self.project_id = project_id
+        self._exportador = exportador or ExportadorGEE()
+        self._intervalo_ms = intervalo_ms
+        self._detener = threading.Event()
+        self._cancelar = threading.Event()
+        self._despertar = threading.Event()
+        self._terminado = threading.Event()
+        self.senales = SenalesExport()
+
+    def detener(self) -> None:
+        self._detener.set()
+        self._despertar.set()
+
+    def solicitar_cancelacion(self) -> None:
+        self._cancelar.set()
+        self._despertar.set()
+
+    def ha_terminado(self) -> bool:
+        return self._terminado.is_set()
+
+    def _dormir_interrumpible(self, ms: int) -> None:
+        restante = ms
+        while restante > 0 and not self._despertar.is_set():
+            paso = min(_PASO_SLEEP_MS, restante)
+            self._despertar.wait(paso / 1000)
+            restante -= paso
+        self._despertar.clear()
+
+    @Slot()
+    def run(self) -> None:
+        cancel_enviado = False
+        try:
+            with _LOCK_SESION:
+                auth.asegurar_sesion(self.project_id)
+            while not self._detener.is_set():
+                if self._cancelar.is_set() and not cancel_enviado:
+                    try:
+                        self._exportador.cancelar_por_id(self.task_id)
+                    except Exception as exc:  # noqa: BLE001 — el task sigue vivo: seguir poleando
+                        self.senales.fallo.emit(self.task_id, f"No se pudo cancelar: {exc}")
+                    cancel_enviado = True
+                prog = self._exportador.estado_por_id(self.task_id)
+                self.senales.progreso.emit(self.task_id, prog)
+                if prog.terminal:
+                    return
+                self._dormir_interrumpible(self._intervalo_ms)
+        except ErrorAuthGEE as exc:
+            self.senales.fallo.emit(self.task_id, f"Sin sesión GEE: {exc}")
+        except Exception as exc:  # noqa: BLE001 — red caída / status ilegible a mitad del poll
+            self.senales.fallo.emit(self.task_id, f"Se perdió el seguimiento del export: {exc}")
+        finally:
+            self._terminado.set()
+            self.senales.finalizado.emit(self.clave)
