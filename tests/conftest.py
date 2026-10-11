@@ -67,7 +67,7 @@ def _sin_worker_conteo_real(monkeypatch, tmp_path):
     from app.ui.workers import SenalesConteo
 
     class WorkerConteoInerte(QRunnable):
-        def __init__(self, receta, generacion, umbral, project_id=None):
+        def __init__(self, receta, generacion, umbral, project_id=None, interactivo=True):
             super().__init__()
             self.receta, self.generacion, self.umbral = receta, generacion, umbral
             self.senales = SenalesConteo()

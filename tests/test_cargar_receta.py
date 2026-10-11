@@ -199,3 +199,17 @@ def test_estimacion_usa_n_bandas_igual_a_cantidad_de_indices(ventana, monkeypatc
     monkeypatch.setattr(panel_formulario, "estimar_tamano_descarga", espia)
     ventana.form.actualizar_estimacion(_bbox_receta(indices=["NDVI", "EVI", "NDWI"]))
     assert llamadas == [3]
+
+
+def test_tabla_sin_shapefile_usa_features_embebidas(ventana, tmp_path, shp_lotes):
+    """D1: la receta de tabla trae las features; sin el archivo original sigue siendo tabla."""
+    from app.dominio.aoi import FuenteAOI
+    from app.dominio.receta import Producto
+    fc = FuenteAOI.desde_archivo_features(str(shp_lotes))
+    r = _bbox_receta(geometria=FuenteAOI.desde_archivo(str(shp_lotes)),
+                     producto=Producto.TABLA_POLIGONOS, features=fc)
+    desc = {"tipo": "shapefile", "ruta": str(tmp_path / "borrado.shp")}
+    avisos = ventana.form.cargar_receta(RecetaCargada(r, desc))
+    assert not any("se cargó como imagen" in a for a in avisos)
+    cargada = ventana.form.receta_actual()
+    assert cargada.producto is Producto.TABLA_POLIGONOS and cargada.features == fc

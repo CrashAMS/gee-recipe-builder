@@ -37,7 +37,7 @@ def _cola_salida(plan: PlanCompilacion) -> list[str]:
                 f"image={banda}, region=aoi, scale={s.escala_m}, description={s.descripcion!r})",
                 "task.start()"]
     # Preview muestra solo el primer índice (F7 decide qué banda previsualizar).
-    return [f"# preview: {_banda(s.bandas[:1])}.getMapId(vis_params) -> tile URL (lo consume F3b)"]
+    return [f"# preview: {_banda(s.bandas[:1])}.getMapId(vis_params) -> tile URL"]
 
 
 def _serie(s: Serie) -> list[str]:

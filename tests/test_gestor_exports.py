@@ -293,3 +293,45 @@ def test_panel_muestra_drive_tabla_csv(qtbot, tmp_path):
                                        intervalo_ms=0))
     qtbot.addWidget(panel)
     assert panel.tabla.item(0, 1).text() == "Drive (tabla CSV): GEE_exports"
+
+
+# --- PERF-1: pollers en pool propio acotado ---
+def test_pollers_usan_pool_propio_acotado_no_el_global(qtbot, tmp_path):
+    from PySide6.QtCore import QThreadPool
+    from app.ui.gestor_exports import MAX_HILOS_POLLERS
+    g = GestorExports(registro=RegistroExports(tmp_path / "exports.json"),
+                      exportador=FakeExportador(), intervalo_ms=0)
+    assert g._pool_pollers is not QThreadPool.globalInstance()
+    assert g._pool_pollers.maxThreadCount() == MAX_HILOS_POLLERS
+
+
+# --- B3: un error transitorio de red no corta el seguimiento ---
+def _exp_con_fallas(n_fallas):
+    exp = FakeExportador(estados=("COMPLETED",))
+    orig = exp.estado_por_id
+    cuenta = {"n": 0}
+
+    def flaky(task_id):
+        cuenta["n"] += 1
+        if cuenta["n"] <= n_fallas:
+            raise ConnectionError("red caída")
+        return orig(task_id)
+    exp.estado_por_id = flaky
+    return exp
+
+
+def test_poller_reintenta_errores_transitorios_antes_de_fallar(monkeypatch, sesiones):
+    from app.ui import workers
+    monkeypatch.setattr(workers, "_ESPERA_REINTENTO_MS", 0)
+    exp = _exp_con_fallas(workers._REINTENTOS_POLL)        # 3 fallas y después responde
+    p = PollerTask("T1", exportador=exp, intervalo_ms=0)
+    fallos, progresos = [], []
+    p.senales.fallo.connect(lambda t, m: fallos.append(m))
+    p.senales.progreso.connect(lambda t, prog: progresos.append(prog))
+    p.run()
+    assert fallos == [] and progresos and progresos[-1].terminal
+    exp = _exp_con_fallas(workers._REINTENTOS_POLL + 1)    # se agotan los reintentos → fallo
+    p = PollerTask("T1", exportador=exp, intervalo_ms=0)
+    p.senales.fallo.connect(lambda t, m: fallos.append(m))
+    p.run()
+    assert len(fallos) == 1 and "red caída" in fallos[0]

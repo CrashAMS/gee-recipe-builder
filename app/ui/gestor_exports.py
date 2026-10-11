@@ -17,6 +17,10 @@ from app.ui.workers import (
 
 AVISO_SIN_SESION = "Sin sesión GEE: los exports pendientes se retoman al autenticarte"
 
+# Los PollerTask duermen entre consultas ocupando un hilo: van a un pool PROPIO y acotado
+# para que el pool global quede libre para preview/conteo/serie/tabla/descarga (PERF-1).
+MAX_HILOS_POLLERS = 4
+
 
 class GestorExports(QObject):
     cambio = Signal(str)                    # task_id cuyo estado/aviso cambió
@@ -30,6 +34,11 @@ class GestorExports(QObject):
         self.registro = registro or RegistroExports()
         self._exportador = exportador or ExportadorGEE()
         self._pool = pool
+        if pool is None:
+            self._pool_pollers = QThreadPool(self)
+            self._pool_pollers.setMaxThreadCount(MAX_HILOS_POLLERS)
+        else:
+            self._pool_pollers = pool   # tests: un pool fake para todo
         self._intervalo_ms = intervalo_ms
         self._lanzadores: dict[str, WorkerLanzarExport] = {}
         self._pollers: dict[str, PollerTask] = {}
@@ -37,7 +46,10 @@ class GestorExports(QObject):
         self._avisos: dict[str, str] = {}   # último error de seguimiento por task (no persiste)
 
     def _start(self, worker) -> None:
-        (self._pool or QThreadPool.globalInstance()).start(worker)
+        if isinstance(worker, PollerTask):
+            self._pool_pollers.start(worker)
+        else:
+            (self._pool or QThreadPool.globalInstance()).start(worker)
 
     # ---- API ----
     def lanzar(self, image, cfg: ConfigExport, clave: str | None = None) -> str:

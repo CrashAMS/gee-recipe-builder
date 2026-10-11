@@ -8,4 +8,4 @@ col = (ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
 col = col.scaleAndOffset()
 col = col.spectralIndices(['kNDVI'])
 img = col.median().clip(aoi)
-# preview: img.select('kNDVI').getMapId(vis_params) -> tile URL (lo consume F3b)
+# preview: img.select('kNDVI').getMapId(vis_params) -> tile URL

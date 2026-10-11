@@ -288,3 +288,9 @@ def test_js_str_escapa():
     assert js_str("a'b") == r"'a\'b'"
     assert js_str("c\\d") == r"'c\\d'"
     assert js_str("x\ny") == r"'x\ny'"
+
+
+def test_preview_python_sin_comentario_residual_de_fase():
+    """D3 (decisión 3 del PRD): el dialecto no menciona fases internas."""
+    r = _receta(indices=["kNDVI"], salida=Salida.PREVIEW, mascara_nubes=False)
+    assert "F3b" not in dialecto_python.compilar(r)

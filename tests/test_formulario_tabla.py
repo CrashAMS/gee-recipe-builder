@@ -250,3 +250,34 @@ def test_ejecutar_tabla_con_colision_avisa_antes_de_pedir_archivo(ventana, shp_l
     monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: dialogos.append(1) or ("", ""))
     ventana._ejecutar()
     assert avisos and dialogos == []
+
+
+# ---- PERF-2 / D2 / PERF-3: cache de la geometría disuelta y debounce del visor ----
+def test_receta_actual_no_relee_ni_disuelve_el_archivo_por_cambio(ventana, shp_lotes, monkeypatch):
+    f = ventana.form
+    _shp(f, shp_lotes)
+    llamadas = []
+    orig = panel_formulario.FuenteAOI.desde_descriptor
+    monkeypatch.setattr(panel_formulario.FuenteAOI, "desde_descriptor",
+                        staticmethod(lambda d: llamadas.append(d) or orig(d)))
+    f.spin_escala.setValue(40)
+    f.chk_mascara.toggle()
+    assert f.receta_actual() is not None and llamadas == []
+    _shp(f, shp_lotes)                    # re-elegir el AOI invalida el cache: una relectura
+    f.receta_actual()
+    assert len(llamadas) == 1
+
+
+def test_script_con_fc_grande_se_debouncea(ventana, shp_lotes, monkeypatch):
+    from app.ui import ventana_principal
+    monkeypatch.setattr(ventana_principal, "_FEATURES_DEBOUNCE_SCRIPT", 1)
+    f = ventana.form
+    _shp(f, shp_lotes)
+    _elegir_tabla(f)
+    llamadas = []
+    monkeypatch.setattr(ventana, "_actualizar_script", lambda r=None: llamadas.append(r))
+    f.spin_escala.setValue(40)
+    assert llamadas == [] and ventana._debounce_script.isActive()
+    ventana._debounce_script.stop()
+    ventana._on_debounce_script()
+    assert len(llamadas) == 1 and llamadas[0].features is not None

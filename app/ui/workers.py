@@ -46,6 +46,28 @@ def solicitud_desde_receta(receta: Receta) -> "ejecutor.SolicitudEjecucion":
     )
 
 
+# Serializa Initialize/OAuth entre TODOS los workers: evita Initialize concurrentes y
+# más de un flujo OAuth en el browser (B2).
+_LOCK_SESION = threading.Lock()
+
+
+class SinSesionSilenciosa(Exception):
+    """Disparo automático (no interactivo) sin sesión GEE: terminar sin OAuth ni diálogo."""
+
+
+def _sesion(project_id: str | None, interactivo: bool = True) -> None:
+    """Política única de sesión (B2), siempre bajo `_LOCK_SESION`.
+    Interactivo (acción del usuario): `asegurar_sesion` (puede abrir OAuth).
+    Automático (debounce): solo `intentar_inicializar`; sin sesión → `SinSesionSilenciosa`."""
+    with _LOCK_SESION:
+        if interactivo:
+            auth.asegurar_sesion(project_id)
+            return
+        project = project_id or config.leer_project()
+        if not project or not auth.intentar_inicializar(project):
+            raise SinSesionSilenciosa()
+
+
 class SenalesWorker(QObject):
     """Señales de un worker. QRunnable no puede tener señales propias, por eso este QObject."""
     terminado = Signal(object)   # payload de éxito (ej. ruta del .tif)
@@ -66,7 +88,7 @@ class WorkerDescarga(QRunnable):
     @Slot()
     def run(self) -> None:
         try:
-            auth.asegurar_sesion(self.project_id)   # Initialize primero; browser solo la 1ª vez
+            _sesion(self.project_id)   # Initialize primero; browser solo la 1ª vez
             sol = solicitud_desde_receta(self.receta)
             ruta = ejecutor.ejecutar_a_disco(sol, str(self.destino))
             self.senales.terminado.emit(ruta)
@@ -89,9 +111,10 @@ class WorkerPreview(QRunnable):
 
     def __init__(self, receta: Receta, project_id: str | None = None,
                  vis_params: dict | None = None, paleta: list[str] | None = None,
-                 banda: str | None = None) -> None:
+                 banda: str | None = None, interactivo: bool = True) -> None:
         super().__init__()
         self.receta = receta
+        self.interactivo = interactivo   # False = disparo automático (debounce): sin OAuth
         self.banda = banda   # None = indices[0]; el preview es de UNA sola banda
         self.project_id = project_id
         self.vis_params = vis_params
@@ -103,7 +126,7 @@ class WorkerPreview(QRunnable):
         try:
             from app.mapa.preview import VIS_PARAMS_DEFAULT, url_tiles_para
 
-            auth.asegurar_sesion(self.project_id)
+            _sesion(self.project_id, self.interactivo)
             sol = solicitud_desde_receta(self.receta)
             imagen = ejecutor.construir_imagen(sol)
             banda = self.banda if self.banda is not None else self.receta.indices[0]
@@ -118,6 +141,8 @@ class WorkerPreview(QRunnable):
                     base["palette"] = list(self.paleta)
                 resultado = url_tiles_para(imagen, base, auto_stretch=True)
             self.senales.terminado.emit(resultado)
+        except SinSesionSilenciosa:
+            pass   # disparo automático sin sesión: en silencio, sin OAuth ni diálogo
         except ErrorAuthGEE as e:
             self.senales.error.emit("auth", str(e))
         except ErrorEjecucionGEE as e:
@@ -139,9 +164,10 @@ class WorkerConteo(QRunnable):
     respuestas cuyo token `generacion` ya no es el vigente."""
 
     def __init__(self, receta: Receta, generacion: int, umbral: int,
-                 project_id: str | None = None) -> None:
+                 project_id: str | None = None, interactivo: bool = True) -> None:
         super().__init__()
         self.receta = receta
+        self.interactivo = interactivo   # False = disparo automático (debounce): sin OAuth
         self.generacion = generacion
         self.umbral = umbral
         self.project_id = project_id
@@ -154,10 +180,12 @@ class WorkerConteo(QRunnable):
     @Slot()
     def run(self) -> None:
         try:
-            auth.asegurar_sesion(self.project_id)
+            _sesion(self.project_id, self.interactivo)
             sol = solicitud_desde_receta(self.receta)
             total, pocas = ejecutor.contar_imagenes(sol, self.umbral)
             self.senales.terminado.emit((self.generacion, total, pocas))
+        except SinSesionSilenciosa:   # automático sin sesión: solo el label, sin OAuth ni diálogo
+            self._fallo("sin_sesion", "sin sesión GEE")
         except ErrorAuthGEE as e:
             self._fallo("auth", str(e))
         except ErrorEjecucionGEE as e:
@@ -185,7 +213,7 @@ class WorkerConstruirImagenExport(QRunnable):
     @Slot()
     def run(self) -> None:
         try:
-            auth.asegurar_sesion(self.project_id)
+            _sesion(self.project_id)
             sol = solicitud_desde_receta(self.receta)
             imagen = ejecutor.imagen_indice(sol)
             self.senales.terminado.emit((imagen, sol.aoi))
@@ -202,9 +230,8 @@ class WorkerConstruirImagenExport(QRunnable):
 _INTERVALO_POLL_MS = 10_000  # 10 s entre consultas de status (DEC-4 de F0). Configurable.
 _PASO_SLEEP_MS = 500         # granularidad del sleep interrumpible
 
-# Varios PollerTask recuperados al abrir la app arrancan a la vez: serializar la sesión
-# evita Initialize concurrentes y más de un flujo OAuth en el browser.
-_LOCK_SESION = threading.Lock()
+_REINTENTOS_POLL = 3         # B3: reintentos ante error transitorio de red antes de emitir `fallo`
+_ESPERA_REINTENTO_MS = 2_000  # espera base; crece x2 por intento (2 s, 4 s, 8 s)
 
 _MSG_CUOTA = ("Cuota de tasks de GEE excedida. Esperá a que terminen tasks "
               "en curso o cancelá alguna e intentá de nuevo.\n\nDetalle: {exc}")
@@ -319,6 +346,22 @@ class PollerTask(QRunnable):
             restante -= paso
         self._despertar.clear()
 
+    def _estado_con_reintentos(self):
+        """B3: un error transitorio de red no corta el seguimiento: reintenta
+        `_REINTENTOS_POLL` veces con espera creciente; recién después propaga."""
+        for intento in range(_REINTENTOS_POLL + 1):
+            try:
+                return self._exportador.estado_por_id(self.task_id)
+            except ErrorAuthGEE:
+                raise
+            except Exception:  # noqa: BLE001 — red caída / status ilegible
+                if intento == _REINTENTOS_POLL:
+                    raise
+                self._dormir_interrumpible(_ESPERA_REINTENTO_MS * (2 ** intento))
+                if self._detener.is_set():
+                    return None
+        return None
+
     @Slot()
     def run(self) -> None:
         cancel_enviado = False
@@ -338,7 +381,9 @@ class PollerTask(QRunnable):
                     except Exception as exc:  # noqa: BLE001 — el task sigue vivo: seguir poleando
                         self.senales.fallo.emit(self.task_id, f"No se pudo cancelar: {exc}")
                     cancel_enviado = True
-                prog = self._exportador.estado_por_id(self.task_id)
+                prog = self._estado_con_reintentos()
+                if prog is None:   # detenido durante la espera de un reintento
+                    return
                 self.senales.progreso.emit(self.task_id, prog)
                 if prog.terminal:
                     return

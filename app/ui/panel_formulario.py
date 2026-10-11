@@ -49,6 +49,9 @@ class PanelFormulario(QWidget):
         self._filtrados: list = []           # resultado vigente de catalogo.buscar (contenido de la lista)
         self._cache_sensores: dict[str, frozenset[str]] = {}
         self._features_aoi: dict | None = None   # FeatureCollection del AOI-archivo (solo se relee al cambiar el AOI)
+        # PERF-2: geometría disuelta del AOI-archivo cacheada por (tipo, ruta) → (geometría | error).
+        # Se invalida al cambiar el AOI; receta_actual() deja de leer disco en cada llamada.
+        self._cache_geometria: tuple[tuple, dict | None, str | None] | None = None
         self._cargando = False                   # True durante cargar_receta (el AOI se evalúa al final)
 
         # --- Índice (primera decisión, index-first) ---
@@ -413,8 +416,25 @@ class PanelFormulario(QWidget):
         except FuenteAOIError:
             return None     # el error al usuario lo da receta_actual vía desde_descriptor
 
+    def _geometria_aoi(self, descriptor: dict) -> dict:
+        """`FuenteAOI.desde_descriptor` con cache para AOI-archivo (leer + disolver es caro).
+        Levanta FuenteAOIError (también cacheado) como el original."""
+        if descriptor.get("tipo") not in {"shapefile", "geojson"}:
+            return FuenteAOI.desde_descriptor(descriptor)
+        clave = (descriptor.get("tipo"), descriptor.get("ruta"))
+        if self._cache_geometria is None or self._cache_geometria[0] != clave:
+            try:
+                self._cache_geometria = (clave, FuenteAOI.desde_descriptor(descriptor), None)
+            except FuenteAOIError as e:
+                self._cache_geometria = (clave, None, str(e))
+        _, geometria, error = self._cache_geometria
+        if error is not None:
+            raise FuenteAOIError(error)
+        return geometria
+
     def _on_aoi_cambiado(self) -> None:
         """Cambió el AOI: relee las features (única lectura, no por tecla) y habilita/deshabilita la tabla."""
+        self._cache_geometria = None     # mismo archivo re-elegido (pudo cambiar en disco): releer
         if self._cargando:
             return
         self._features_aoi = self._leer_features()
@@ -488,7 +508,7 @@ class PanelFormulario(QWidget):
         if ind is None or sen is None or descriptor is None:
             return None
         try:
-            geometria = FuenteAOI.desde_descriptor(descriptor)
+            geometria = self._geometria_aoi(descriptor)
         except FuenteAOIError as e:
             self._error_aoi = str(e)
             return None
@@ -593,6 +613,7 @@ class PanelFormulario(QWidget):
 
             d = cargada.descriptor_aoi
             tipo = d.get("tipo") if d else None
+            features_embebidas = None
             if tipo in {"bbox", "geojson-dict"} or (
                     tipo in {"shapefile", "geojson"} and d.get("ruta") and Path(d["ruta"]).exists()):
                 self.selector_aoi.set_descriptor(d)
@@ -601,8 +622,10 @@ class PanelFormulario(QWidget):
                           else "La receta no traía descriptor de zona")
                 avisos.append(f"{motivo}: se cargó la geometría embebida como zona dibujada.")
                 self.selector_aoi.set_descriptor({"tipo": "geojson-dict", "geojson": r.geometria})
+                features_embebidas = r.features   # D1: la tabla sobrevive sin el archivo original
             self._cargando = False
-            self._features_aoi = self._leer_features()
+            self._features_aoi = (features_embebidas if features_embebidas is not None
+                                  else self._leer_features())
             if not self._actualizar_habilitacion_tabla():
                 avisos.append(
                     "La tabla por polígono necesita un shapefile o GeoJSON con polígonos: "

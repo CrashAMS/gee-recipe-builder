@@ -36,6 +36,10 @@ from app.ui.workers import (
 # Debounce del auto-refresh de preview al cambiar la receta (decisión #6 F3b):
 # regenerar mapid en cada cambio, pero sin saturar GEE en cada tecla/spin.
 _DEBOUNCE_PREVIEW_MS = 800
+# PERF-3: con una FeatureCollection grande embebida (tabla por polígono) compilar y pintar
+# el script en cada tecla bloquea el hilo GUI: se debouncea el visor.
+_DEBOUNCE_SCRIPT_MS = 300
+_FEATURES_DEBOUNCE_SCRIPT = 50
 _SIN_ARMAR = object()  # centinela: _actualizar_script() sin argumento arma su propia receta
 
 
@@ -136,6 +140,11 @@ class VentanaPrincipal(QMainWindow):
         self._dominio_paleta: str | None = None
         self._ultimo_resultado = None
         # --- Wiring de actualización en vivo ---
+        self._receta_script_pendiente = None
+        self._debounce_script = QTimer(self)
+        self._debounce_script.setSingleShot(True)
+        self._debounce_script.setInterval(_DEBOUNCE_SCRIPT_MS)
+        self._debounce_script.timeout.connect(self._on_debounce_script)
         self.form.cambiado.connect(self._on_form_cambiado)
         self.visor.dialecto_cambiado.connect(self._actualizar_script)
         self._on_form_cambiado()
@@ -149,6 +158,8 @@ class VentanaPrincipal(QMainWindow):
         # `_preview_en_curso` evita lanzar previews solapados: WorkerPreview corre en el
         # pool y `finalizado` lo baja siempre (éxito o error), así el flag nunca se traba.
         self._preview_en_curso = False
+        self._preview_pendiente = False  # B1: pedido descartado con otro en vuelo → se reencola
+        self._preview_resuelto = False   # ok/error llegó; si no, fue un disparo sin sesión
         self._debounce_preview = QTimer(self)
         self._debounce_preview.setSingleShot(True)
         self._debounce_preview.setInterval(_DEBOUNCE_PREVIEW_MS)
@@ -235,7 +246,14 @@ class VentanaPrincipal(QMainWindow):
     def _on_form_cambiado(self) -> None:
         """Slot central: arma la receta una sola vez y la reparte a script y estimación."""
         receta = self.form.receta_actual()
-        self._actualizar_script(receta)
+        feats = getattr(receta, "features", None) if receta is not None else None
+        if feats is not None and len(feats.get("features", ())) > _FEATURES_DEBOUNCE_SCRIPT:
+            self._receta_script_pendiente = receta
+            self._debounce_script.start()
+        else:
+            self._debounce_script.stop()
+            self._receta_script_pendiente = None
+            self._actualizar_script(receta)
         self.form.actualizar_estimacion(receta)
         self._override_vis = False        # cambio de receta: el rango vuelve a automático
         self._ultimo_resultado = None
@@ -293,6 +311,10 @@ class VentanaPrincipal(QMainWindow):
     def _on_auto(self) -> None:
         self._override_vis = False
         self._debounce_preview.start()
+
+    def _on_debounce_script(self) -> None:
+        receta, self._receta_script_pendiente = self._receta_script_pendiente, None
+        self._actualizar_script(receta)
 
     def _actualizar_script(self, receta=_SIN_ARMAR) -> None:
         if receta is _SIN_ARMAR:
@@ -520,12 +542,13 @@ class VentanaPrincipal(QMainWindow):
         debounced (`interactivo=False`) se salta en silencio si todavía no hay project
         configurado, para no interrumpir al usuario mientras completa el formulario.
 
-        Si ya hay un refresh en vuelo, se ignora el pedido nuevo. El pipeline corre en
+        Si ya hay un refresh en vuelo, el pedido se marca pendiente y se reencola al terminar (B1). El pipeline corre en
         `WorkerPreview` (QThreadPool + señales, mismo patrón robusto que la descarga):
         `finalizado` se emite SIEMPRE (éxito o error), así el botón nunca queda colgado
         en "Generando…". Todo el pipeline GEE (auth + imagen + stretch + getMapId) va en
         ese único hilo — partirlo entre dos hilos cuelga getMapId (visto en vivo)."""
         if self._preview_en_curso:
+            self._preview_pendiente = True   # B1: se reencola al terminar el que está en vuelo
             return
         receta = self.form.receta_actual()
         if receta is None:
@@ -553,11 +576,12 @@ class VentanaPrincipal(QMainWindow):
             vis_params = {"min": self.spin_min.value(), "max": self.spin_max.value(),
                           "palette": paleta}
         self._preview_en_curso = True
+        self._preview_resuelto = False
         self.btn_preview.setEnabled(False)
         self.btn_preview.setText("Generando preview…")
         self.lbl_preview.setText("Generando preview… (calculando en GEE, puede tardar unos segundos)")
         worker = WorkerPreview(receta, vis_params=vis_params, paleta=paleta,
-                               banda=self._banda_preview())
+                               banda=self._banda_preview(), interactivo=interactivo)
         worker.senales.terminado.connect(self._on_preview_ok)
         worker.senales.error.connect(self._on_preview_error)
         worker.senales.finalizado.connect(self._on_preview_fin)
@@ -576,7 +600,7 @@ class VentanaPrincipal(QMainWindow):
         gen = self._gen_conteo
         self.form.lbl_conteo.setText("Contando escenas…")
         self._umbral_conteo = self.form.umbral_nubes()
-        worker = WorkerConteo(receta, gen, self._umbral_conteo)
+        worker = WorkerConteo(receta, gen, self._umbral_conteo, interactivo=False)
         worker.senales.terminado.connect(self._on_conteo_ok)
         worker.senales.error_gen.connect(self._on_conteo_error)
         self.pool.start(worker)
@@ -597,7 +621,11 @@ class VentanaPrincipal(QMainWindow):
 
     def _on_preview_ok(self, resultado) -> None:
         """`resultado`: PreviewResultado. Pinta tiles + leyenda y vuelca min/max a los
-        spinbox sin disparar otro preview."""
+        spinbox sin disparar otro preview. Si hay un pedido más nuevo encolado (B1) el
+        resultado es de la receta vieja: se descarta y lo pinta el refresco reencolado."""
+        self._preview_resuelto = True
+        if self._preview_pendiente:
+            return
         self._ultimo_resultado = resultado
         nota = "" if resultado.estirado else ("rango manual" if self._override_vis
                                               else "rango no estimado")
@@ -610,6 +638,7 @@ class VentanaPrincipal(QMainWindow):
         self.lbl_preview.setText("Preview cargado ✓ — el índice se pintó sobre el mapa.")
 
     def _on_preview_error(self, tipo: str, mensaje: str) -> None:
+        self._preview_resuelto = True
         self.lbl_preview.setText(f"Error al generar el preview ({tipo}) — ver detalle.")
         QMessageBox.critical(self, f"Error al generar el preview ({tipo})", mensaje)
 
@@ -617,6 +646,11 @@ class VentanaPrincipal(QMainWindow):
         self._preview_en_curso = False
         self.btn_preview.setEnabled(True)
         self.btn_preview.setText("Refrescar preview")
+        if not self._preview_resuelto:   # disparo automático sin sesión GEE (B2): sin OAuth
+            self.lbl_preview.setText("Preview no generado: sin sesión GEE (usá «Refrescar preview»).")
+        if self._preview_pendiente:
+            self._preview_pendiente = False
+            self._debounce_preview.start()
 
     def closeEvent(self, event) -> None:
         # Solo corta el polling local: los tasks siguen en GEE y se retoman al reabrir.

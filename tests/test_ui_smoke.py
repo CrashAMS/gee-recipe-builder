@@ -346,3 +346,40 @@ def test_cargar_receta_restaura_producto_y_periodo_sin_aviso(ventana, qtbot):
     assert Producto(f.combo_producto.currentData()) is Producto.SERIE_TEMPORAL
     assert f.combo_periodo.currentData() == "16_dias" and not f.combo_periodo.isHidden()
     assert f.receta_actual() == r
+
+
+# ---- B1: refresco de preview reencolado; B2: disparo automático sin OAuth ----
+def test_preview_descartado_en_vuelo_se_reencola(ventana):
+    ventana._preview_en_curso = True
+    ventana._lanzar_preview(interactivo=False)
+    assert ventana._preview_pendiente
+    ventana._on_preview_ok(object())      # resultado de la receta vieja: se descarta
+    assert ventana._ultimo_resultado is None
+    ventana._debounce_preview.stop()
+    ventana._on_preview_fin()
+    assert not ventana._preview_pendiente and ventana._debounce_preview.isActive()
+
+
+def test_preview_automatico_sin_sesion_no_abre_oauth(ventana, monkeypatch):
+    from app.gee import auth, config
+    lanzados = []
+    monkeypatch.setattr(ventana.pool, "start", lanzados.append)
+    ventana.form.selector_aoi.tipo.setCurrentIndex(2)
+    for k, val in [("oeste", -59.0), ("sur", -35.0), ("este", -58.0), ("norte", -34.0)]:
+        ventana.form.selector_aoi._bbox[k].setValue(val)
+    ventana._lanzar_preview(interactivo=False)
+    w = lanzados[-1]
+    assert w.interactivo is False
+
+    def oauth(p=None):
+        raise AssertionError("un disparo automático no debe abrir OAuth")
+    con_lock = []
+    monkeypatch.setattr(auth, "asegurar_sesion", oauth)
+    monkeypatch.setattr(config, "leer_project", lambda: "proj")
+    monkeypatch.setattr(auth, "intentar_inicializar",
+                        lambda p: con_lock.append(workers._LOCK_SESION.locked()) or False)
+    errores, fin = [], []
+    w.senales.error.connect(lambda t, m: errores.append(t))
+    w.senales.finalizado.connect(lambda: fin.append(1))
+    workers.WorkerPreview.run(w)
+    assert con_lock == [True] and errores == [] and fin == [1]
