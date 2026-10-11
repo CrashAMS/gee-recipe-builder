@@ -72,3 +72,41 @@ def test_config_actualiza_project(tmp_path, monkeypatch):
     config.guardar_project("uno")
     config.guardar_project("dos")
     assert config.leer_project() == "dos"
+
+
+def test_extraer_tif_con_varios_tif_falla():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("download.NDVI.tif", b"II*\x00a")
+        zf.writestr("download.EVI.tif", b"II*\x00b")
+    with pytest.raises(ValueError, match="2 .tif"):
+        extraer_tif_de_zip(buf.getvalue(), "x.tif")
+
+
+def test_descargar_imagen_pide_un_solo_tif_multibanda(tmp_path):
+    from app.gee import descarga
+
+    class ImagenFake:
+        def getDownloadURL(self, params):
+            self.params = params
+            return "http://fake/zip"
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("download.tif", b"II*\x00ok")
+
+    class Resp:
+        content = buf.getvalue()
+
+        def raise_for_status(self):
+            pass
+
+    img = ImagenFake()
+    orig = descarga.requests.get
+    descarga.requests.get = lambda url, timeout=0: Resp()
+    try:
+        descarga.descargar_imagen(img, None, 20, "EPSG:4326", str(tmp_path / "o.tif"))
+    finally:
+        descarga.requests.get = orig
+    assert img.params["filePerBand"] is False
+    assert img.params["format"] == "ZIPPED_GEO_TIFF"

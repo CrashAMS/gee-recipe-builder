@@ -14,7 +14,8 @@ from PySide6.QtCore import Qt, QThreadPool, QTimer
 from app.dominio.compilador import dialecto_js, dialecto_python
 from app import recientes
 from app.dominio.errores import RecetaJSONInvalida
-from app.dominio.receta import Salida
+from app.dominio import catalogo
+from app.dominio.receta import Salida, nombre_bandas
 from app.dominio.receta_json import a_json, desde_json
 from app.gee import config
 from app.mapa.preview import PALETAS, paleta_por_dominio, vis_para_leyenda
@@ -85,7 +86,11 @@ class VentanaPrincipal(QMainWindow):
         self.spin_max.setValue(1.0)
         self.btn_auto = QPushButton("Auto")
         self.btn_auto.setToolTip("Volver al rango automático (percentiles 2-98)")
+        # Banda a previsualizar (F7): el preview es de UNA banda; por default indices[0].
+        self.combo_banda = QComboBox()
+        self.combo_banda.setToolTip("Banda (índice) que se previsualiza en el mapa")
         fila_vis = QHBoxLayout()
+        fila_vis.addWidget(self.combo_banda)
         fila_vis.addWidget(self.combo_paleta)
         fila_vis.addWidget(self.spin_min)
         fila_vis.addWidget(self.spin_max)
@@ -150,6 +155,7 @@ class VentanaPrincipal(QMainWindow):
         self._debounce_conteo.timeout.connect(self._lanzar_conteo)
         self.form.cambiado.connect(self._debounce_conteo.start)
         self.combo_paleta.currentIndexChanged.connect(self._on_paleta_cambiada)
+        self.combo_banda.currentIndexChanged.connect(self._on_banda_cambiada)
         self.spin_min.valueChanged.connect(self._on_rango_manual)
         self.spin_max.valueChanged.connect(self._on_rango_manual)
         self.btn_auto.clicked.connect(self._on_auto)
@@ -224,11 +230,38 @@ class VentanaPrincipal(QMainWindow):
         self.form.actualizar_estimacion(receta)
         self._override_vis = False        # cambio de receta: el rango vuelve a automático
         self._ultimo_resultado = None
+        self._repoblar_combo_banda()
         self._sincronizar_paleta_dominio()
 
+    def _repoblar_combo_banda(self) -> None:
+        """`combo_banda` = índices de la selección; conserva la banda elegida si sigue, si no
+        queda en `indices[0]`. Sin señales (el cambio ya viaja por `form.cambiado`)."""
+        indices = self.form.indices_seleccionados()
+        actual = self.combo_banda.currentData()
+        self.combo_banda.blockSignals(True)
+        try:
+            self.combo_banda.clear()
+            for sn in indices:
+                self.combo_banda.addItem(sn, sn)
+            if actual in indices:
+                self.combo_banda.setCurrentIndex(indices.index(actual))
+        finally:
+            self.combo_banda.blockSignals(False)
+
+    def _banda_preview(self) -> str | None:
+        return self.combo_banda.currentData()
+
+    def _on_banda_cambiada(self) -> None:
+        # Otra banda: el min/max anterior no vale; paleta al default de su dominio y re-preview.
+        self._override_vis = False
+        self._ultimo_resultado = None
+        self._sincronizar_paleta_dominio()
+        self._debounce_preview.start()
+
     def _sincronizar_paleta_dominio(self) -> None:
-        """La paleta vuelve al default del dominio solo si el dominio del índice cambió."""
-        ind = self.form._indice_actual()
+        """La paleta vuelve al default del dominio solo si el dominio de la banda previsualizada cambió."""
+        banda = self._banda_preview()
+        ind = catalogo.cargar_catalogo().get(banda) if banda else self.form._indice_actual()
         if ind is None or ind.application_domain == self._dominio_paleta:
             return
         self._dominio_paleta = ind.application_domain
@@ -351,7 +384,7 @@ class VentanaPrincipal(QMainWindow):
     def _on_imagen_export_lista(self, payload) -> None:
         imagen, region = payload
         receta = self._receta_export_en_curso
-        nombre = f"{receta.indice}_{receta.fecha_inicio}_{receta.fecha_fin}"
+        nombre = f"{nombre_bandas(receta.indices)}_{receta.fecha_inicio}_{receta.fecha_fin}"
         dlg = DialogoExportDrive(imagen, region, self.gestor_exports, sugerencia_nombre=nombre,
                                  scale=receta.escala, parent=self)
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
@@ -418,7 +451,8 @@ class VentanaPrincipal(QMainWindow):
         self.btn_preview.setEnabled(False)
         self.btn_preview.setText("Generando preview…")
         self.lbl_preview.setText("Generando preview… (calculando en GEE, puede tardar unos segundos)")
-        worker = WorkerPreview(receta, vis_params=vis_params, paleta=paleta)
+        worker = WorkerPreview(receta, vis_params=vis_params, paleta=paleta,
+                               banda=self._banda_preview())
         worker.senales.terminado.connect(self._on_preview_ok)
         worker.senales.error.connect(self._on_preview_error)
         worker.senales.finalizado.connect(self._on_preview_fin)

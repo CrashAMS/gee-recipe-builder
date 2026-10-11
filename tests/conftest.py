@@ -63,6 +63,7 @@ def _sin_worker_conteo_real(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(dir_cfg))
     from PySide6.QtCore import QRunnable
     from app.ui import ventana_principal
+    from app.ui import workers
     from app.ui.workers import SenalesConteo
 
     class WorkerConteoInerte(QRunnable):
@@ -75,6 +76,16 @@ def _sin_worker_conteo_real(monkeypatch, tmp_path):
             pass
 
     monkeypatch.setattr(ventana_principal, "WorkerConteo", WorkerConteoInerte)
+
+    # Mismo criterio para el preview (F7): sin esto, tests que llaman cargar_receta disparan
+    # un WorkerPreview real (GEE) cuyo dialogo de error abre en el teardown y crashea en
+    # Windows (heap 0xc0000374). Subclase inerte: `isinstance(w, workers.WorkerPreview)` sigue
+    # valiendo y `workers.WorkerPreview.run` real queda disponible para los tests del worker.
+    class WorkerPreviewInerte(workers.WorkerPreview):
+        def run(self):
+            pass
+
+    monkeypatch.setattr(ventana_principal, "WorkerPreview", WorkerPreviewInerte)
 
 
 @pytest.fixture

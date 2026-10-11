@@ -185,3 +185,49 @@ def test_vis_para_leyenda_antepone_hash_a_hex_y_deja_nombres_css():
     out = vis_para_leyenda(vis)
     assert out["palette"] == ["white", "#CE7E45", "#112233", "#abc"]
     assert vis["palette"][1] == "CE7E45"   # no muta la entrada
+
+
+# --- F7: WorkerPreview selecciona UNA banda ---
+def _correr_worker_preview(monkeypatch, indices, banda):
+    from app.dominio.aoi import desde_bbox
+    from app.dominio.receta import Receta
+    from app.gee import ejecutor
+    from app.mapa import preview
+    from app.ui import workers
+
+    seleccionadas = []
+
+    class ImagenSelect:
+        def select(self, b):
+            seleccionadas.append(b)
+            return ("img", b)
+
+    receta = Receta(sensor="COPERNICUS/S2_SR_HARMONIZED", indices=indices,
+                    geometria=desde_bbox(-59.0, -35.0, -58.0, -34.0),
+                    fecha_inicio="2024-01-01", fecha_fin="2024-02-01", mascara_nubes=True,
+                    composicion="median", salida="preview")
+    monkeypatch.setattr(workers.auth, "asegurar_sesion", lambda pid=None: "p")
+    monkeypatch.setattr(workers, "solicitud_desde_receta", lambda r: object())
+    monkeypatch.setattr(ejecutor, "construir_imagen", lambda sol: ImagenSelect())
+    monkeypatch.setattr(preview, "url_tiles_para", lambda img, vis, auto_stretch: ("url", img))
+    w = workers.WorkerPreview(receta, banda=banda)
+    ok, err = [], []
+    w.senales.terminado.connect(ok.append)
+    w.senales.error.connect(lambda t, m: err.append((t, m)))
+    w.run()
+    return seleccionadas, ok, err
+
+
+def test_worker_preview_selecciona_la_banda_pedida(monkeypatch):
+    sel, ok, err = _correr_worker_preview(monkeypatch, ["NDVI", "EVI"], "EVI")
+    assert sel == ["EVI"] and ok == [("url", ("img", "EVI"))] and not err
+
+
+def test_worker_preview_default_es_el_primer_indice(monkeypatch):
+    sel, ok, err = _correr_worker_preview(monkeypatch, ["NDVI", "EVI"], None)
+    assert sel == ["NDVI"] and not err
+
+
+def test_worker_preview_banda_ajena_emite_error(monkeypatch):
+    sel, ok, err = _correr_worker_preview(monkeypatch, ["NDVI", "EVI"], "NDWI")
+    assert not ok and err and "NDWI" in err[0][1]

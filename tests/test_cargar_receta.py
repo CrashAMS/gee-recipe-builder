@@ -23,7 +23,6 @@ def ventana(qtbot, mapa_stub, monkeypatch, tmp_path):
     v = VentanaPrincipal()
     qtbot.addWidget(v)
     v._debounce_preview.stop()
-    v._debounce_preview.timeout.disconnect()  # cargar_receta emite `cambiado`: sin preview real (GEE)
     v._debounce_conteo.timeout.disconnect()   # el conteo nunca dispara en tests (no toca GEE)
     return v
 
@@ -154,11 +153,11 @@ def test_cargar_receta_sin_max_nubes_destilda(ventana):
 
 # --- F6b: form mono-índice ante recetas multi-índice / producto ---
 
-def test_receta_con_dos_indices_carga_el_primero_y_avisa(ventana):
+def test_receta_con_dos_indices_restaura_principal_y_extras_sin_aviso(ventana):
     r = _bbox_receta(indices=["NDVI", "EVI"])
     avisos = ventana.form.cargar_receta(RecetaCargada(r, BBOX))
-    assert ventana.form.receta_actual().indices == ["NDVI"]
-    assert any("2 índices" in a and "NDVI" in a for a in avisos)
+    assert ventana.form.receta_actual().indices == ["NDVI", "EVI"]
+    assert not any("índices" in a for a in avisos)
 
 
 def test_receta_con_segundo_indice_desconocido_levanta(ventana):

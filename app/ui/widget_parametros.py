@@ -1,7 +1,7 @@
 """Inputs numéricos dinámicos para los parámetros ajustables del índice (EVI: g, C1, C2, L)."""
 from __future__ import annotations
 
-from PySide6.QtWidgets import QWidget, QFormLayout, QDoubleSpinBox
+from PySide6.QtWidgets import QWidget, QFormLayout, QDoubleSpinBox, QLabel
 from PySide6.QtCore import Signal
 
 
@@ -16,19 +16,38 @@ class PanelParametros(QWidget):
         self._spins: dict[str, QDoubleSpinBox] = {}
 
     def cargar(self, parametros_ajustables) -> None:
-        """`parametros_ajustables`: iterable con .nombre / .default / .descripcion (modelo de F1)."""
+        """`parametros_ajustables`: iterable con .nombre / .default / .descripcion (modelo de F1).
+        Caso de un solo bloque, sin título."""
+        self.cargar_grupos([("", parametros_ajustables)])
+
+    def cargar_grupos(self, grupos) -> None:
+        """`grupos`: [(short_name, parametros_ajustables), ...]. Un bloque con título por índice
+        (si hay más de uno). Un nombre compartido tiene UN solo spinbox, en el bloque del primer
+        índice que lo usa y con el default de ese índice; en los siguientes va una nota sin spinbox.
+        `valores()` sigue siendo un dict plano. Una sola emisión de `cambiado` por carga."""
         self._limpiar()
-        for p in parametros_ajustables:
-            nombre, default, desc = self._desempacar(p)
-            spin = QDoubleSpinBox()
-            spin.setDecimals(4)
-            spin.setRange(-1_000_000.0, 1_000_000.0)
-            spin.setValue(float(default))
-            if desc:
-                spin.setToolTip(desc)
-            spin.valueChanged.connect(self.cambiado)
-            self._form.addRow(nombre, spin)
-            self._spins[nombre] = spin
+        grupos = list(grupos)
+        con_titulo = len(grupos) > 1
+        dueno: dict[str, str] = {}   # nombre de parámetro -> short_name del índice donde vive el spinbox
+        for short_name, params in grupos:
+            filas = [self._desempacar(p) for p in params]
+            if con_titulo:
+                titulo = QLabel(f"<b>{short_name}</b>")
+                self._form.addRow(titulo)
+            for nombre, default, desc in filas:
+                if nombre in dueno:
+                    self._form.addRow(QLabel(f"{nombre} (compartido con {dueno[nombre]})"))
+                    continue
+                spin = QDoubleSpinBox()
+                spin.setDecimals(4)
+                spin.setRange(-1_000_000.0, 1_000_000.0)
+                spin.setValue(float(default))
+                if desc:
+                    spin.setToolTip(desc)
+                spin.valueChanged.connect(self.cambiado)
+                self._form.addRow(nombre, spin)
+                self._spins[nombre] = spin
+                dueno[nombre] = short_name
         self.cambiado.emit()
 
     def valores(self) -> dict[str, float]:

@@ -16,6 +16,11 @@ def extraer_tif_de_zip(contenido_zip: bytes, ruta_destino: str) -> str:
             raise ValueError(
                 f"El ZIP de GEE no contiene ningún .tif (contenido: {zf.namelist()})"
             )
+        if len(tifs) > 1:
+            raise ValueError(
+                f"El ZIP de GEE trae {len(tifs)} .tif ({tifs}): se esperaba un único GeoTIFF "
+                "multibanda (¿falta filePerBand=False?)"
+            )
         datos = zf.read(tifs[0])
     with open(ruta_destino, "wb") as f:
         f.write(datos)
@@ -25,7 +30,8 @@ def extraer_tif_de_zip(contenido_zip: bytes, ruta_destino: str) -> str:
 def descargar_imagen(imagen: "ee.Image", region, scale, crs, ruta_destino, timeout=300) -> str:
     """Genera la URL de descarga, baja el ZIP y extrae el .tif. Los errores de
     límite (cómputo / 32MB) surgen en getDownloadURL y se clasifican [HALLAZGO-1.1]."""
-    params = {"scale": scale, "region": region, "crs": crs, "format": "ZIPPED_GEO_TIFF"}
+    params = {"scale": scale, "region": region, "crs": crs, "format": "ZIPPED_GEO_TIFF",
+              "filePerBand": False}   # N índices = UN .tif multibanda (si no, GEE arma un .tif por banda)
     try:
         url = imagen.getDownloadURL(params)
     except ee.EEException as exc:

@@ -86,3 +86,27 @@ def test_listar_dominios_sin_radar():
     assert "radar" not in doms
     assert {"vegetation", "water", "burn"} <= set(doms)
     assert etiqueta_dominio("water") == "Agua"
+
+
+# --- F7: intersección de sensores ---
+def test_sensores_para_indices_es_interseccion_y_conserva_orden():
+    from app.dominio import catalogo
+    ndvi = [s.collection_id for s in catalogo.sensores_para("NDVI")]
+    ndwi = [s.collection_id for s in catalogo.sensores_para("NDWI")]
+    comunes = [s.collection_id for s in catalogo.sensores_para_indices(["NDVI", "NDWI"])]
+    assert comunes and set(comunes) <= set(ndvi) and set(comunes) <= set(ndwi)
+    assert comunes == [c for c in ndvi if c in ndwi]
+
+
+def test_sensores_para_indices_un_solo_indice_igual_a_sensores_para():
+    from app.dominio import catalogo
+    assert ([s.collection_id for s in catalogo.sensores_para_indices(["EVI"])]
+            == [s.collection_id for s in catalogo.sensores_para("EVI")])
+
+
+def test_sensores_para_indices_vacio_y_desconocido():
+    import pytest
+    from app.dominio import catalogo
+    assert catalogo.sensores_para_indices([]) == []
+    with pytest.raises(KeyError, match="NO_EXISTE"):
+        catalogo.sensores_para_indices(["NDVI", "NO_EXISTE"])

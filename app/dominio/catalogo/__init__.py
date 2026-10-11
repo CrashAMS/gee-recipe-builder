@@ -17,6 +17,19 @@ def sensores_para(indice: Indice | str) -> list[PerfilSensor]:
     return [PERFILES[cid] for cid in sensores_de_indice(short_name)]
 
 
+def sensores_para_indices(indices: list[str]) -> list[PerfilSensor]:
+    """Intersección de `sensores_para` de cada índice (decisión F0 6), en el orden de
+    `sensores_para(indices[0])`. Lista vacía → []. Short_name inexistente → KeyError claro."""
+    if not indices:
+        return []
+    cat = cargar_catalogo()
+    for sn in indices:
+        if sn not in cat:
+            raise KeyError(f"Índice '{sn}' no existe en el catálogo")
+    comunes = set.intersection(*(set(sensores_de_indice(sn)) for sn in indices))
+    return [s for s in sensores_para(indices[0]) if s.collection_id in comunes]
+
+
 def soporta_mascara(collection_id: str) -> bool:
     """True si ese collection ID tiene maskClouds disponible ([HALLAZGO-2.4])."""
     return collection_id in sensores_con_mascara()

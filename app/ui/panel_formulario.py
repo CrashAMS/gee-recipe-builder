@@ -3,11 +3,11 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QFormLayout, QComboBox, QCheckBox, QDateEdit, QLabel, QGroupBox,
-    QSpinBox, QLineEdit, QHBoxLayout,
+    QSpinBox, QLineEdit, QHBoxLayout, QListWidget, QListWidgetItem,
 )
 from pathlib import Path
 
-from PySide6.QtCore import Signal, QDate
+from PySide6.QtCore import Signal, QDate, Qt
 
 from app.dominio import catalogo
 from app.dominio.aoi import FuenteAOI, bbox_de
@@ -37,6 +37,9 @@ class PanelFormulario(QWidget):
         self._error_aoi: str | None = None
         self._escala_manual = False          # True solo si el usuario editó la escala
         self._aplicando_limites = False
+        self._extras: list[str] = []         # índices tildados además del principal, en orden de tildado
+        self._filtrados: list = []           # resultado vigente de catalogo.buscar (contenido de la lista)
+        self._cache_sensores: dict[str, frozenset[str]] = {}
 
         # --- Índice (primera decisión, index-first) ---
         caja_indice = QGroupBox("1 · Índice")
@@ -56,6 +59,12 @@ class PanelFormulario(QWidget):
         self.combo_dominio.addItem("Todos los dominios", None)
         for dom in catalogo.listar_dominios():
             self.combo_dominio.addItem(catalogo.etiqueta_dominio(dom), dom)
+        # Multi-selección (F7): el principal (combo) va tildado y fijo; los extras se tildan acá.
+        self.lista_indices = QListWidget()
+        self.lista_indices.setFixedHeight(110)
+        self.lista_indices.setToolTip("Tildá índices extra: se descargan juntos en un GeoTIFF multibanda")
+        self.lbl_seleccion = QLabel()
+        self.lbl_seleccion.setWordWrap(True)
         self._poblar_combo_indices(catalogo.buscar())
         self.lbl_desc = QLabel()
         self.lbl_desc.setWordWrap(True)
@@ -63,6 +72,8 @@ class PanelFormulario(QWidget):
         f_idx.addRow("Buscar", self.edit_buscar)
         f_idx.addRow("Dominio", self.combo_dominio)
         f_idx.addRow("Índice", self.combo_indice)
+        f_idx.addRow("Sumar", self.lista_indices)
+        f_idx.addRow("Elegidos", self.lbl_seleccion)
         f_idx.addRow(self.lbl_desc)
         f_idx.addRow("Parámetros", self.panel_params)
         raiz.addWidget(caja_indice)
@@ -137,6 +148,7 @@ class PanelFormulario(QWidget):
         self.edit_buscar.textChanged.connect(self._on_filtro_indices)
         self.combo_dominio.currentIndexChanged.connect(self._on_filtro_indices)
         self.combo_sensor.currentIndexChanged.connect(self._on_sensor)
+        self.lista_indices.itemChanged.connect(self._on_item_lista)
         self.spin_escala.valueChanged.connect(self._on_escala_editada)
         self.fecha_inicio.dateChanged.connect(self._aplicar_limites_fechas)
         self.fecha_fin.dateChanged.connect(self._aplicar_limites_fechas)
@@ -154,6 +166,103 @@ class PanelFormulario(QWidget):
     def _indice_actual(self):
         return self.combo_indice.currentData()
 
+    def indices_seleccionados(self) -> list[str]:
+        """[principal] + extras tildados, en orden. Vacío si el combo no tiene índice."""
+        ind = self._indice_actual()
+        return [] if ind is None else [ind.short_name, *self._extras]
+
+    def _ids_sensores(self, short_name: str) -> frozenset[str]:
+        if short_name not in self._cache_sensores:
+            self._cache_sensores[short_name] = frozenset(catalogo.sensores_de_indice(short_name))
+        return self._cache_sensores[short_name]
+
+    def _hay_sensor_comun(self, indices: list[str]) -> bool:
+        return bool(frozenset.intersection(*(self._ids_sensores(i) for i in indices)))
+
+    def _poblar_lista(self) -> None:
+        """Reconstruye los ítems de `lista_indices` desde `_filtrados` (sin señales)."""
+        self.lista_indices.blockSignals(True)
+        try:
+            self.lista_indices.clear()
+            for ind in self._filtrados:
+                it = QListWidgetItem(f"{ind.short_name} — {ind.long_name}")
+                it.setData(Qt.ItemDataRole.UserRole, ind.short_name)
+                self.lista_indices.addItem(it)
+        finally:
+            self.lista_indices.blockSignals(False)
+        self._estados_lista()
+
+    def _estados_lista(self) -> None:
+        """Actualiza tildes y habilitación en el lugar (seguro dentro de `itemChanged`)."""
+        sel = self.indices_seleccionados()
+        self.lista_indices.blockSignals(True)
+        try:
+            for i in range(self.lista_indices.count()):
+                it = self.lista_indices.item(i)
+                sn = it.data(Qt.ItemDataRole.UserRole)
+                marcado = sn in sel
+                it.setCheckState(Qt.CheckState.Checked if marcado else Qt.CheckState.Unchecked)
+                flags = Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsSelectable
+                if marcado or not sel or self._hay_sensor_comun([*sel, sn]):
+                    it.setFlags(flags | Qt.ItemFlag.ItemIsEnabled)
+                    it.setToolTip("Índice principal (se cambia en el combo)"
+                                  if sel and sn == sel[0] else "")
+                else:
+                    it.setFlags(flags)
+                    it.setToolTip("sin sensor en común con la selección")
+        finally:
+            self.lista_indices.blockSignals(False)
+        self.lbl_seleccion.setText(", ".join(sel))
+
+    def _on_item_lista(self, item: QListWidgetItem) -> None:
+        sn = item.data(Qt.ItemDataRole.UserRole)
+        sel = self.indices_seleccionados()
+        if not sel:
+            return
+        if sn == sel[0]:                       # el principal no se destilda
+            self._estados_lista()
+            return
+        if item.checkState() == Qt.CheckState.Checked:
+            if sn not in self._extras and self._hay_sensor_comun([*sel, sn]):
+                self._extras.append(sn)
+        elif sn in self._extras:
+            self._extras.remove(sn)
+        self._reaplicar_seleccion()
+
+    def _reaplicar_seleccion(self) -> None:
+        """Cambió la selección (no el principal): tildes, sensores y params; un solo `cambiado`."""
+        previos = self.panel_params.valores()
+        self.blockSignals(True)
+        try:
+            self._estados_lista()
+            self._cargar_params()
+            self.panel_params.set_valores(previos)      # lo editado por el usuario no se pierde
+            self._repoblar_sensores(conservar=True)
+            self._on_sensor()
+        finally:
+            self.blockSignals(False)
+        self.cambiado.emit()
+
+    def _cargar_params(self) -> None:
+        cat = catalogo.cargar_catalogo()
+        self.panel_params.cargar_grupos(
+            [(sn, cat[sn].parametros_ajustables) for sn in self.indices_seleccionados()])
+
+    def _repoblar_sensores(self, conservar: bool) -> None:
+        """`combo_sensor` = intersección de sensores de la selección (sin señales)."""
+        actual = self._sensor_actual()
+        self.combo_sensor.blockSignals(True)
+        try:
+            self.combo_sensor.clear()
+            for sen in catalogo.sensores_para_indices(self.indices_seleccionados()):
+                self.combo_sensor.addItem(sen.display_name, sen)
+            if conservar and actual is not None:
+                pos = self.combo_sensor.findText(actual.display_name)
+                if pos >= 0:
+                    self.combo_sensor.setCurrentIndex(pos)
+        finally:
+            self.combo_sensor.blockSignals(False)
+
     def _poblar_combo_indices(self, indices) -> bool:
         """Repuebla `combo_indice` con `indices` conservando la selección si sigue presente.
         Sin señales (ni `_on_indice` ni `cambiado`). Devuelve True si cambió el índice
@@ -169,6 +278,8 @@ class PanelFormulario(QWidget):
                 self.combo_indice.setCurrentIndex(max(pos, 0) if indices else -1)
         finally:
             self.combo_indice.blockSignals(False)
+        self._filtrados = list(indices)
+        self._poblar_lista()
         despues = self._indice_actual()
         return despues is None or antes is None or despues.short_name != antes.short_name
 
@@ -205,14 +316,23 @@ class PanelFormulario(QWidget):
         ind = self._indice_actual()
         if ind is None:
             return
+        # Cambió el principal: el nuevo principal ya no es "extra" y los extras sin sensor
+        # en común con él se destildan (en orden, voraz).
+        antes = list(self._extras)
+        kept: list[str] = []
+        for e in antes:
+            if e != ind.short_name and self._hay_sensor_comun([ind.short_name, *kept, e]):
+                kept.append(e)
+        self._extras = kept
+        quitados = [e for e in antes if e not in kept and e != ind.short_name]
         # `Indice` (F1) no expone `.descripcion` — mostramos long_name + fórmula ASI.
-        self.lbl_desc.setText(f"{ind.long_name}  ·  fórmula: {ind.formula}")
-        self.panel_params.cargar(ind.parametros_ajustables)
-        self.combo_sensor.blockSignals(True)
-        self.combo_sensor.clear()
-        for sen in catalogo.sensores_para(ind):
-            self.combo_sensor.addItem(sen.display_name, sen)
-        self.combo_sensor.blockSignals(False)
+        texto = f"{ind.long_name}  ·  fórmula: {ind.formula}"
+        if quitados:
+            texto += f"  ·  se destildaron por no compartir sensor: {', '.join(quitados)}"
+        self.lbl_desc.setText(texto)
+        self._estados_lista()
+        self._cargar_params()
+        self._repoblar_sensores(conservar=False)
         self._on_sensor()
         self.cambiado.emit()
 
@@ -308,7 +428,7 @@ class PanelFormulario(QWidget):
             self._error_aoi = str(e)
             return None
         return Receta(
-            indices=[ind.short_name],                             # strings, no objetos Indice (mono-índice hasta F7)
+            indices=self.indices_seleccionados(),                 # strings, no objetos Indice; [0] = principal
             sensor=sen.collection_id,                             # string, no el objeto Sensor
             geometria=geometria,                                   # GeoJSON dict (F1) — campo `geometria`, no `aoi`
             fecha_inicio=self.fecha_inicio.date().toString("yyyy-MM-dd"),
@@ -325,29 +445,24 @@ class PanelFormulario(QWidget):
     def cargar_receta(self, cargada) -> list[str]:
         """Inverso de `receta_actual`: vuelca una `RecetaCargada` en los widgets y emite
         `cambiado` UNA vez al final. Devuelve avisos (AOI degradado, valores no aplicables).
-        Levanta ValueError (form intacto) si algún índice o el sensor no existen en el catálogo.
-        El form es mono-índice hasta F7: con varios índices carga el primero y avisa; con
-        producto distinto de imagen avisa y queda como imagen."""
+        Levanta ValueError (form intacto) si algún índice no existe, o si el sensor no existe
+        o no es común a todos los índices. Con producto distinto de imagen avisa y queda como imagen."""
         r = cargada.receta
         cat = catalogo.cargar_catalogo()
         desconocidos = [i for i in r.indices if i not in cat]
         if desconocidos:
             raise ValueError(f"Índice(s) que no existen en el catálogo: {', '.join(desconocidos)}.")
         primero = r.indices[0]
+        ids = [s.collection_id for s in catalogo.sensores_para_indices(list(r.indices))]
+        if r.sensor not in ids:
+            raise ValueError(
+                f"El sensor '{r.sensor}' no existe o no es compatible con {', '.join(r.indices)}.")
         self._limpiar_filtro_indices()   # un filtro activo no debe ocultar el índice a cargar
         idx_ind = next((i for i in range(self.combo_indice.count())
                         if self.combo_indice.itemData(i).short_name == primero), -1)
         if idx_ind < 0:
             raise ValueError(f"El índice '{primero}' no existe en el catálogo.")
-        ids = [s.collection_id for s in catalogo.sensores_para(self.combo_indice.itemData(idx_ind))]
-        if r.sensor not in ids:
-            raise ValueError(f"El sensor '{r.sensor}' no existe o no es compatible con {primero}.")
-
         avisos: list[str] = []
-        if len(r.indices) > 1:
-            avisos.append(
-                f"La receta trae {len(r.indices)} índices ({', '.join(r.indices)}); el formulario "
-                f"todavía admite uno solo: se cargó {primero}. Si la volvés a guardar, se pierden los demás.")
         if r.producto is not Producto.IMAGEN:
             avisos.append(
                 f"El producto '{r.producto.value}' todavía no está disponible: se cargó como imagen.")
@@ -356,7 +471,8 @@ class PanelFormulario(QWidget):
             self.combo_indice.blockSignals(True)
             self.combo_indice.setCurrentIndex(idx_ind)
             self.combo_indice.blockSignals(False)
-            self._on_indice()                         # repuebla sensores y params
+            self._extras = list(r.indices[1:])        # ya validados: todos comparten sensor con r.sensor
+            self._on_indice()                         # repuebla lista, sensores y params
             self.combo_sensor.blockSignals(True)
             self.combo_sensor.setCurrentIndex(
                 next(i for i in range(self.combo_sensor.count())

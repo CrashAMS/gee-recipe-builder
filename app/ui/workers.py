@@ -86,9 +86,11 @@ class WorkerPreview(QRunnable):
     (se re-pide getMapId tal cual). Sin él se estira por percentiles usando `paleta`."""
 
     def __init__(self, receta: Receta, project_id: str | None = None,
-                 vis_params: dict | None = None, paleta: list[str] | None = None) -> None:
+                 vis_params: dict | None = None, paleta: list[str] | None = None,
+                 banda: str | None = None) -> None:
         super().__init__()
         self.receta = receta
+        self.banda = banda   # None = indices[0]; el preview es de UNA sola banda
         self.project_id = project_id
         self.vis_params = vis_params
         self.paleta = paleta
@@ -102,6 +104,10 @@ class WorkerPreview(QRunnable):
             auth.asegurar_sesion(self.project_id)
             sol = solicitud_desde_receta(self.receta)
             imagen = ejecutor.construir_imagen(sol)
+            banda = self.banda if self.banda is not None else self.receta.indices[0]
+            if banda not in self.receta.indices:
+                raise ValueError(f"La banda '{banda}' no está en la receta ({self.receta.indices}).")
+            imagen = imagen.select(banda)    # el stretch y getMapId ven una sola banda
             if self.vis_params is not None:
                 resultado = url_tiles_para(imagen, self.vis_params, auto_stretch=False)
             else:
