@@ -21,7 +21,7 @@ from typing import ClassVar, Iterable, Union
 from app.dominio.receta import Composicion, Producto, Receta, nombre_bandas
 from app.dominio.receta import Salida as DestinoSalida
 from app.dominio.compilador.base import prop_nubes_filtro
-from app.dominio.errores import ProductoNoSoportado
+from app.dominio import tabla_poligonos
 from app.dominio.periodos import periodos
 
 
@@ -35,6 +35,7 @@ class TipoPaso(str, Enum):
     REDUCTOR = "reductor"
     SALIDA = "salida"
     SERIE = "serie"                 # F8: reemplaza REDUCTOR + SALIDA con producto serie
+    TABLA = "tabla"                 # F9: reemplaza SALIDA con producto tabla_poligonos
 
 
 @dataclass(frozen=True)
@@ -105,7 +106,22 @@ class Serie:
     escala_m: int                   # scale de reduceRegion
 
 
-Paso = Union[Fuente, FiltroFechas, FiltroNubes, Mascara, Escala, Indices, Reductor, Salida, Serie]
+@dataclass(frozen=True)
+class Tabla:
+    """Tabla por polígono: un `reduceRegions` por índice sobre la imagen compuesta.
+    `rama` ('local' | 'drive') sale de `tabla_poligonos.es_local`; `columnas` es el
+    orden de salida (properties del shapefile + estadísticas por índice)."""
+    tipo_paso: ClassVar[TipoPaso] = TipoPaso.TABLA
+    poligonos: dict = field(hash=False)   # FeatureCollection GeoJSON (copia profunda)
+    indices: tuple[str, ...]              # == Indices.nombres
+    escala_m: int
+    rama: str
+    columnas: tuple[str, ...]
+    descripcion: str                      # nombre de la tarea (rama drive)
+
+
+Paso = Union[Fuente, FiltroFechas, FiltroNubes, Mascara, Escala, Indices, Reductor, Salida, Serie,
+             Tabla]
 # Segmento renderizado: tipos de paso que cubre (vacío = preámbulo) + sus líneas.
 Segmento = tuple[tuple[TipoPaso, ...], list[str]]
 
@@ -125,8 +141,9 @@ class PlanCompilacion:
 
 def construir_plan(r: Receta) -> PlanCompilacion:
     """Orden fijo: Fuente → FiltroFechas → FiltroNubes? → Mascara? → Escala →
-    Indices → (Reductor → Salida | Serie). Levanta FiltroNubesNoDisponible (ver
-    docstring del módulo) y, con serie, DemasiadosPeriodos (> 60 períodos)."""
+    Indices → (Reductor → Salida | Reductor → Tabla | Serie). Levanta FiltroNubesNoDisponible
+    (ver docstring del módulo), con serie DemasiadosPeriodos (> 60 períodos) y con tabla
+    TablaSinPoligonos / ColumnaTablaEnConflicto."""
     prop_nubes = prop_nubes_filtro(r)
     nombres = tuple(r.indices)
     pasos: list[Paso] = [Fuente(r.sensor, copy.deepcopy(r.geometria)), FiltroFechas(r.fecha_inicio, r.fecha_fin)]
@@ -138,17 +155,17 @@ def construir_plan(r: Receta) -> PlanCompilacion:
     if r.producto is Producto.SERIE_TEMPORAL:
         lista = periodos(r.fecha_inicio, r.fecha_fin, r.periodo)
         pasos.append(Serie(tuple(lista), r.composicion, nombres, r.escala))
+    elif r.producto is Producto.TABLA_POLIGONOS:
+        fc = tabla_poligonos.exigir_poligonos(r.features)
+        columnas = tabla_poligonos.columnas_para(fc, nombres)
+        rama = "local" if tabla_poligonos.es_local(fc) else "drive"
+        pasos += [Reductor(r.composicion),
+                  Tabla(copy.deepcopy(fc), nombres, r.escala, rama, tuple(columnas),
+                        f"tabla_{nombre_bandas(nombres)}")]
     else:
         pasos += [Reductor(r.composicion),
                   Salida(r.salida, r.escala, nombres, nombre_bandas(nombres))]
     return PlanCompilacion(tuple(pasos))
-
-
-def exigir_producto_compilable(r: Receta) -> None:
-    """La tabla por polígono todavía no compila a script (F9): error explícito en `compilar`."""
-    if r.producto is Producto.TABLA_POLIGONOS:
-        raise ProductoNoSoportado(
-            f"El producto '{r.producto.value}' todavía no genera script.")
 
 
 def verificar_tipos(plan: PlanCompilacion, soportados: Iterable[TipoPaso]) -> None:

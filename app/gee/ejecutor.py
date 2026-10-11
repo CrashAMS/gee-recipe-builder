@@ -5,6 +5,7 @@ import ee
 import eemont  # noqa: F401  (monkeypatcha ee.ImageCollection / ee.Image)
 
 from app.dominio import estimador  # F1 [HALLAZGO-1.4] — ver nota abajo
+from app.dominio import tabla_poligonos as _tabla
 from .descarga import descargar_imagen
 from .errores import DescargaExcedeLimite, ErrorEjecucionGEE
 
@@ -69,6 +70,28 @@ def construir_imagen(sol: SolicitudEjecucion) -> ee.Image:
     col = construir_coleccion(sol)
     imagen = _REDUCTORES[sol.reduccion](col).select(list(sol.indices))
     return imagen.clip(sol.aoi)
+
+
+def _reducer_tabla(indice: str) -> "ee.Reducer":
+    """mean+min+max+stdDev+count sobre la misma entrada, renombrados a `<indice>_<sufijo>`."""
+    r = ee.Reducer.mean()
+    for nombre in _tabla.SALIDAS_REDUCER[1:]:
+        r = r.combine(reducer2=getattr(ee.Reducer, nombre)(), outputPrefix="", sharedInputs=True)
+    return r.setOutputs(_tabla.columnas_estadistica(indice))
+
+
+def tabla_poligonos(sol: SolicitudEjecucion, fc_geojson: dict) -> "ee.FeatureCollection":
+    """Tabla por polígono (F9): un `reduceRegions` por índice encadenado sobre la FC (la salida
+    de uno es la entrada del siguiente), `scale = sol.scale`, y `select` final sin geometría con
+    el orden de `columnas_para`. Levanta `ColumnaTablaEnConflicto` antes de tocar GEE. No
+    resuelve nada en el servidor: el llamador hace `getInfo` o exporta la colección."""
+    columnas = _tabla.columnas_para(fc_geojson, sol.indices)
+    imagen = construir_imagen(sol)
+    tabla = ee.FeatureCollection(fc_geojson)
+    for indice in sol.indices:
+        tabla = imagen.select(indice).reduceRegions(
+            collection=tabla, reducer=_reducer_tabla(indice), scale=sol.scale)
+    return tabla.select(columnas, None, False)
 
 
 def serie_periodo(col: "ee.ImageCollection", sol: SolicitudEjecucion, ini: str,

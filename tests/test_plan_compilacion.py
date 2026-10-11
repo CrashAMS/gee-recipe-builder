@@ -6,7 +6,7 @@ from app.dominio.compilador.dialecto_js import ESCALA_JS
 from app.dominio.compilador.plan import (
     FiltroNubes, Indices, Salida, TipoPaso, construir_plan, tipos_renderizados)
 from app.dominio.errores import FiltroNubesNoDisponible, MascaraNoDisponibleJS
-from tests.test_compilador import SERIE_ANUAL, SERIE_MENSUAL, _receta
+from tests.test_compilador import SERIE_ANUAL, SERIE_MENSUAL, TABLA_DRIVE, TABLA_LOCAL, _receta
 
 T = TipoPaso
 
@@ -65,6 +65,9 @@ _RECETAS_GOLDEN = {
     # F8: serie temporal (goldens ndvi_s2_serie_mensual / ndvi_evi_s2_serie_anual).
     "serie_mensual": SERIE_MENSUAL,
     "serie_anual": SERIE_ANUAL,
+    # F9: tabla por polígono (rama local; la rama drive se parametriza aparte por el umbral).
+    "tabla_local": TABLA_LOCAL,
+    "tabla_drive_multi": TABLA_DRIVE,
 }
 
 
@@ -125,3 +128,26 @@ def test_serie_demasiados_periodos_sale_del_plan():
     with pytest.raises(DemasiadosPeriodos):
         construir_plan(_receta(producto="serie_temporal", periodo="mensual",
                                fecha_inicio="2000-01-01", fecha_fin="2010-01-01"))
+
+
+def test_tabla_reemplaza_salida_y_elige_rama_por_umbral(monkeypatch):
+    from app.dominio import tabla_poligonos
+    from app.dominio.compilador.plan import Tabla
+    plan = construir_plan(_receta(**TABLA_LOCAL))
+    assert plan.tipos == (T.FUENTE, T.FILTRO_FECHAS, T.MASCARA, T.ESCALA, T.INDICES, T.REDUCTOR, T.TABLA)
+    t = plan.paso(T.TABLA)
+    assert isinstance(t, Tabla) and t.rama == "local" and t.escala_m == 10
+    assert t.columnas == ("lote", "ha", "NDVI_mean", "NDVI_min", "NDVI_max", "NDVI_std", "NDVI_n")
+    monkeypatch.setattr(tabla_poligonos, "UMBRAL_TABLA_LOCAL", 1)
+    assert construir_plan(_receta(**TABLA_LOCAL)).paso(T.TABLA).rama == "drive"
+
+
+@pytest.mark.parametrize("kw", [TABLA_LOCAL, TABLA_DRIVE], ids=["local", "multi"])
+def test_paridad_tabla_rama_drive(kw, monkeypatch):
+    from app.dominio import tabla_poligonos
+    monkeypatch.setattr(tabla_poligonos, "UMBRAL_TABLA_LOCAL", 1)
+    plan = construir_plan(_receta(**kw))
+    assert plan.paso(T.TABLA).rama == "drive"
+    js = tipos_renderizados(dialecto_js.segmentos(plan))
+    py = tipos_renderizados(dialecto_python.segmentos(plan))
+    assert js == py == plan.tipos

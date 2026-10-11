@@ -10,9 +10,10 @@ from __future__ import annotations
 
 from PySide6.QtCore import QObject, QThreadPool, Signal, Slot
 
-from app.gee.exportador import ConfigExport, ExportadorGEE, ProgresoExport
+from app.gee.exportador import ConfigExport, ConfigExportTabla, ExportadorGEE, ProgresoExport
 from app.gee.registro_exports import RegistroExports, nueva_entrada
-from app.ui.workers import _INTERVALO_POLL_MS, PollerTask, WorkerLanzarExport
+from app.ui.workers import (
+    _INTERVALO_POLL_MS, PollerTask, WorkerLanzarExport, WorkerLanzarExportTabla)
 
 AVISO_SIN_SESION = "Sin sesión GEE: los exports pendientes se retoman al autenticarte"
 
@@ -43,6 +44,16 @@ class GestorExports(QObject):
         """Lanza en el pool y devuelve la clave del lanzamiento (para filtrar
         `lanzado`/`fallo_lanzamiento`; el llamador puede fijarla de antemano)."""
         w = WorkerLanzarExport(image, cfg, exportador=self._exportador, clave=clave)
+        w.senales.iniciado.connect(self._on_iniciado)
+        w.senales.fallo.connect(self._on_fallo_lanzamiento)
+        w.senales.finalizado.connect(self._on_lanzador_finalizado)
+        self._lanzadores[w.clave] = w
+        self._start(w)
+        return w.clave
+
+    def lanzar_tabla(self, fc, cfg_tabla: ConfigExportTabla, clave: str | None = None) -> str:
+        """Como `lanzar`, para `Export.table.toDrive` (F9). Se registra con `destino="drive-tabla"`."""
+        w = WorkerLanzarExportTabla(fc, cfg_tabla, exportador=self._exportador, clave=clave)
         w.senales.iniciado.connect(self._on_iniciado)
         w.senales.fallo.connect(self._on_fallo_lanzamiento)
         w.senales.finalizado.connect(self._on_lanzador_finalizado)
@@ -127,10 +138,12 @@ class GestorExports(QObject):
                 pass
 
     @Slot(str, object)
-    def _on_iniciado(self, task_id: str, cfg: ConfigExport) -> None:
+    def _on_iniciado(self, task_id: str, cfg: ConfigExport | ConfigExportTabla) -> None:
         carpeta = cfg.carpeta_drive if cfg.carpeta_drive is not None else cfg.bucket
+        destino = (cfg.destino_registro if isinstance(cfg, ConfigExportTabla)
+                   else cfg.destino.value)
         try:
-            self.registro.agregar(nueva_entrada(task_id, cfg.descripcion, cfg.destino.value, carpeta))
+            self.registro.agregar(nueva_entrada(task_id, cfg.descripcion, destino, carpeta))
         except OSError as exc:   # disco lleno / permisos: el task igual corre, se sigue en memoria
             self._avisos[task_id] = f"No se pudo guardar en el registro: {exc}"
         self.cambio.emit(task_id)

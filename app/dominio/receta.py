@@ -49,6 +49,9 @@ class Receta:
     max_nubes_pct: int | None = None  # descarta escenas con nubes >= X %; None = sin filtro
     producto: Producto = Producto.IMAGEN
     periodo: str | None = None      # uno de PERIODOS sii producto == serie_temporal
+    # FeatureCollection GeoJSON (4326) con los polígonos de la tabla; solo con tabla_poligonos.
+    # `geometria` sigue siendo la unión disuelta (filterBounds/clip).
+    features: dict | None = None
 
     @property
     def indice(self) -> str:
@@ -93,3 +96,12 @@ class Receta:
             raise ValueError(
                 f"periodo solo aplica a la serie temporal; con producto "
                 f"'{self.producto.value}' debe ser None (recibí {self.periodo!r}).")
+        if self.features is not None:
+            fc = self.features
+            if not (isinstance(fc, dict) and fc.get("type") == "FeatureCollection"
+                    and isinstance(fc.get("features"), list)):
+                raise ValueError("features debe ser una FeatureCollection GeoJSON.")
+            if self.producto is not Producto.TABLA_POLIGONOS:
+                raise ValueError(
+                    f"features solo aplica a la tabla por polígono; con producto "
+                    f"'{self.producto.value}' debe ser None.")

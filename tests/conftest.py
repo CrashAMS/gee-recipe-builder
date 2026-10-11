@@ -94,6 +94,13 @@ def _sin_worker_conteo_real(monkeypatch, tmp_path):
 
     monkeypatch.setattr(ventana_principal, "WorkerSerieTemporal", WorkerSerieTemporalInerte)
 
+    # F9: la tabla por polígono tampoco (la ventana la lanza con WorkerTabla(receta, modo, ruta)).
+    class WorkerTablaInerte(workers.WorkerTabla):
+        def run(self):
+            pass
+
+    monkeypatch.setattr(ventana_principal, "WorkerTabla", WorkerTablaInerte)
+
 
 @pytest.fixture
 def mapa_stub(monkeypatch):

@@ -237,9 +237,9 @@ _DEFS_ESCALA: dict[str, str] = {
 
 # Imports del render sobre el plan neutral (F6a): debajo de la zona congelada a propósito.
 from app.dominio.compilador.plan import (  # noqa: E402
-    PlanCompilacion, Segmento, Serie, TipoPaso, construir_plan, exigir_producto_compilable, unir,
+    PlanCompilacion, Segmento, Serie, Tabla, TipoPaso, construir_plan, unir,
     verificar_tipos)
-from app.dominio.compilador.base import js_str  # noqa: E402
+from app.dominio.compilador.base import js_str, reducer_tabla_js  # noqa: E402
 
 
 def _params_banda_js(coleccion: str, indices: tuple[str, ...],
@@ -256,7 +256,8 @@ def _params_banda_js(coleccion: str, indices: tuple[str, ...],
 # Tipos que este renderer sabe emitir (lista explícita: un TipoPaso nuevo falla ruidoso).
 _RENDERIZA = frozenset({
     TipoPaso.FUENTE, TipoPaso.FILTRO_FECHAS, TipoPaso.FILTRO_NUBES, TipoPaso.MASCARA,
-    TipoPaso.ESCALA, TipoPaso.INDICES, TipoPaso.REDUCTOR, TipoPaso.SALIDA, TipoPaso.SERIE})
+    TipoPaso.ESCALA, TipoPaso.INDICES, TipoPaso.REDUCTOR, TipoPaso.SALIDA, TipoPaso.SERIE,
+    TipoPaso.TABLA})
 
 
 def _banda(bandas: tuple[str, ...]) -> str:
@@ -307,6 +308,27 @@ def _serie(s: Serie) -> list[str]:
         "print(serie);",
         f"print(ui.Chart.feature.byFeature(serie, 'periodo_inicio', {columnas}));",
     ]
+    return lineas
+
+
+def _tabla(t: Tabla) -> list[str]:
+    """Tabla por polígono (F9): un `reduceRegions` por índice encadenado sobre la FC, `select`
+    sin geometría y cierre según rama (local: print · drive: Export.table.toDrive)."""
+    columnas = "[" + ", ".join(js_str(c) for c in t.columnas) + "]"
+    lineas = [f"var poligonos = ee.FeatureCollection({geojson_js(t.poligonos)});", "var tabla = poligonos;"]
+    for i in t.indices:
+        r = reducer_tabla_js(i)
+        lineas += [f"tabla = img.select({js_str(i)}).reduceRegions({{",
+                   "  collection: tabla,",
+                   f"  reducer: {r[0]}"]
+        lineas += [f"  {x}" for x in r[1:-1]]
+        lineas += [f"  {r[-1]},", f"  scale: {t.escala_m}", "});"]
+    lineas.append(f"tabla = tabla.select({columnas}, null, false);")
+    if t.rama == "local":
+        lineas.append("print(tabla);")
+    else:
+        lineas.append(f"Export.table.toDrive({{collection: tabla, description: {js_str(t.descripcion)}, "
+                      f"fileFormat: 'CSV', selectors: {columnas}}});")
     return lineas
 
 
@@ -365,10 +387,13 @@ def segmentos(plan: PlanCompilacion) -> list[Segmento]:
         return segs
     segs.append(((TipoPaso.REDUCTOR,),
                  [f"var img = col.{reductor(plan.paso(TipoPaso.REDUCTOR).composicion)}.clip(aoi);"]))
+    tabla = plan.paso(TipoPaso.TABLA)
+    if tabla:
+        segs.append(((TipoPaso.TABLA,), _tabla(tabla)))
+        return segs
     segs.append(((TipoPaso.SALIDA,), _cola_salida(plan)))
     return segs
 
 
 def compilar(r: Receta) -> str:
-    exigir_producto_compilable(r)
     return unir(segmentos(construir_plan(r)))

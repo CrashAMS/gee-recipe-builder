@@ -165,12 +165,27 @@ def test_receta_con_segundo_indice_desconocido_levanta(ventana):
         ventana.form.cargar_receta(RecetaCargada(_bbox_receta(indices=["NDVI", "NO_EXISTE"]), BBOX))
 
 
-def test_producto_no_imagen_avisa_y_queda_como_imagen(ventana):
-    # F8: la degradación queda solo para la tabla por polígono (la serie se restaura).
-    r = _bbox_receta(producto="tabla_poligonos")
+def test_tabla_con_aoi_sin_features_avisa_y_queda_como_imagen(ventana):
+    # F9: la tabla se restaura salvo que el AOI cargado (bbox/dibujo) no tenga features.
+    r = _bbox_receta(producto="tabla_poligonos", features=fc_mini())
     avisos = ventana.form.cargar_receta(RecetaCargada(r, BBOX))
-    assert any("tabla_poligonos" in a for a in avisos)
+    assert any("tabla por polígono" in a for a in avisos)
     assert ventana.form.receta_actual().producto.value == "imagen"
+
+
+def test_tabla_con_shapefile_se_restaura_sin_aviso(ventana, shp_lotes):
+    desc = {"tipo": "shapefile", "ruta": str(shp_lotes)}
+    r = _bbox_receta(producto="tabla_poligonos", features=fc_mini())
+    avisos = ventana.form.cargar_receta(RecetaCargada(r, desc))
+    assert not any("tabla" in a for a in avisos)
+    actual = ventana.form.receta_actual()
+    assert actual.producto.value == "tabla_poligonos"
+    assert len(actual.features["features"]) == 3
+
+
+def fc_mini():
+    return {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "geometry": desde_bbox(-59.0, -35.0, -58.0, -34.0), "properties": {}}]}
 
 
 def test_estimacion_usa_n_bandas_igual_a_cantidad_de_indices(ventana, monkeypatch):

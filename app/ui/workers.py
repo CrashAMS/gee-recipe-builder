@@ -7,7 +7,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 
-from app.dominio import catalogo
+from app.dominio import catalogo, serie_csv, tabla_poligonos
 from app.dominio.errores import DominioError, FiltroNubesNoDisponible
 from app.dominio.periodos import periodos
 from app.dominio.serie_csv import FilaSerie
@@ -15,7 +15,7 @@ from app.dominio.receta import Receta
 from app.gee import auth, config, ejecutor
 from app.gee.auth import ErrorAuthGEE
 from app.gee.errores import ErrorEjecucionGEE
-from app.gee.exportador import ConfigExport, ExportadorGEE, es_error_de_cuota
+from app.gee.exportador import ConfigExport, ConfigExportTabla, ExportadorGEE, es_error_de_cuota
 
 
 def solicitud_desde_receta(receta: Receta) -> "ejecutor.SolicitudEjecucion":
@@ -238,11 +238,14 @@ class WorkerLanzarExport(QRunnable):
         self.task_id = ""           # se fija antes de emitir `iniciado`
         self.senales = SenalesExport()
 
+    def _lanzar_task(self):
+        return self._exportador.lanzar(self._image, self._cfg)
+
     @Slot()
     def run(self) -> None:
         try:
             try:
-                task = self._exportador.lanzar(self._image, self._cfg)
+                task = self._lanzar_task()
             except Exception as exc:  # noqa: BLE001
                 mensaje = _MSG_CUOTA.format(exc=exc) if es_error_de_cuota(exc) else str(exc)
                 self.senales.fallo.emit(self.clave, mensaje)
@@ -256,6 +259,18 @@ class WorkerLanzarExport(QRunnable):
             self.senales.iniciado.emit(task_id, self._cfg)
         finally:
             self.senales.finalizado.emit(self.clave)
+
+
+class WorkerLanzarExportTabla(WorkerLanzarExport):
+    """Idem `WorkerLanzarExport` para la tabla por polígono (F9): lanza `Export.table.toDrive`.
+    `image` es la `ee.FeatureCollection` y `cfg` un `ConfigExportTabla`."""
+
+    def __init__(self, fc, cfg: ConfigExportTabla, exportador: ExportadorGEE | None = None,
+                 clave: str | None = None) -> None:
+        super().__init__(fc, cfg, exportador=exportador, clave=clave)
+
+    def _lanzar_task(self):
+        return self._exportador.lanzar_tabla(self._image, self._cfg)
 
 
 class PollerTask(QRunnable):
@@ -396,4 +411,52 @@ class WorkerSerieTemporal(QRunnable):
             self.senales.error.emit("inesperado", str(e))
         finally:
             self._terminado.set()
+            self.senales.finalizado.emit()
+
+
+class WorkerTabla(QRunnable):
+    """Tabla por polígono (F9). `modo` 'local': `getInfo` + CSV en `ruta_csv`; `terminado` emite
+    la ruta. `modo` 'drive': arma la `ee.FeatureCollection` y la emite (el export lo lanza el
+    `GestorExports`). La rama la elige quien lanza (el nº de features se conoce en el hilo Qt).
+    Auth interactiva (`asegurar_sesion`) bajo `_LOCK_SESION`."""
+
+    def __init__(self, receta: Receta, modo: str, ruta_csv: str | Path | None = None,
+                 project_id: str | None = None) -> None:
+        super().__init__()
+        if modo not in ("local", "drive"):
+            raise ValueError(f"modo de tabla desconocido: {modo!r} (local | drive)")
+        if modo == "local" and not ruta_csv:
+            raise ValueError("La rama local necesita la ruta del CSV.")
+        self.receta = receta
+        self.modo = modo
+        self.ruta_csv = ruta_csv
+        self.project_id = project_id
+        self.senales = SenalesWorker()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            r = self.receta
+            fc = tabla_poligonos.exigir_poligonos(r.features)
+            columnas = tabla_poligonos.columnas_para(fc, r.indices)   # conflicto: antes de tocar GEE
+            with _LOCK_SESION:
+                auth.asegurar_sesion(self.project_id)
+            sol = solicitud_desde_receta(r)
+            tabla = ejecutor.tabla_poligonos(sol, fc)
+            if self.modo == "drive":
+                self.senales.terminado.emit(tabla)
+                return
+            info = tabla.getInfo()
+            filas = tabla_poligonos.filas_desde_info(info, columnas)
+            serie_csv.escribir_csv(self.ruta_csv, tabla_poligonos.filas_a_texto(filas, columnas))
+            self.senales.terminado.emit(str(self.ruta_csv))
+        except ErrorAuthGEE as e:
+            self.senales.error.emit("auth", str(e))
+        except (DominioError, ValueError, ErrorEjecucionGEE) as e:
+            self.senales.error.emit(type(e).__name__, str(e))
+        except OSError as e:
+            self.senales.error.emit("OSError", f"No se pudo escribir el CSV: {e}")
+        except Exception as e:  # noqa: BLE001 — todo fallo vuelve a la UI
+            self.senales.error.emit("inesperado", str(e))
+        finally:
             self.senales.finalizado.emit()

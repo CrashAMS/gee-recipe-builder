@@ -92,6 +92,18 @@ class ConfigExport:
     max_pixels: int = 1_000_000_000      # 1e9: exports grandes son el caso de esta fase
 
 
+@dataclass(frozen=True)
+class ConfigExportTabla:
+    """Export de una FeatureCollection a CSV en Drive (tabla por polígono, F9).
+    `selectors` fija las columnas y su orden (sin geometría)."""
+    descripcion: str
+    prefijo_archivo: str
+    carpeta_drive: str
+    selectors: tuple[str, ...]
+    destino_registro: str = "drive-tabla"   # valor de `destino` en exports.json
+    bucket: None = None                      # misma forma que ConfigExport para el gestor
+
+
 def sanitizar_descripcion(nombre: str) -> str:
     """Deja `description` en el charset que GEE acepta ([a-zA-Z0-9_-], <=100)."""
     limpio = _SANITIZA_DESC.sub("_", (nombre or "").strip())
@@ -139,12 +151,32 @@ def construir_task(image: "ee.Image", cfg: ConfigExport) -> "ee.batch.Task":
     return ee.batch.Export.image.toCloudStorage(bucket=cfg.bucket, **comun)
 
 
+def construir_task_tabla(fc: "ee.FeatureCollection", cfg: ConfigExportTabla) -> "ee.batch.Task":
+    """Arma `Export.table.toDrive` en CSV (no lo arranca). Firma oficial:
+    ee.batch.Export.table.toDrive(collection, description, folder, fileNamePrefix,
+        fileFormat, selectors, ...)"""
+    return ee.batch.Export.table.toDrive(
+        collection=fc,
+        description=sanitizar_descripcion(cfg.descripcion),
+        folder=cfg.carpeta_drive,
+        fileNamePrefix=sanitizar_descripcion(cfg.prefijo_archivo),
+        fileFormat="CSV",
+        selectors=list(cfg.selectors),
+    )
+
+
 class ExportadorGEE:
     """Adapter sin estado: construye/arranca/consulta/cancela tasks de export."""
 
     def lanzar(self, image: "ee.Image", cfg: ConfigExport) -> "ee.batch.Task":
         """Construye y arranca el task. Puede levantar EEException (cuota / inválido)."""
         task = construir_task(image, cfg)
+        task.start()
+        return task
+
+    def lanzar_tabla(self, fc: "ee.FeatureCollection", cfg: ConfigExportTabla) -> "ee.batch.Task":
+        """Construye y arranca el export de tabla (F9). Puede levantar EEException."""
+        task = construir_task_tabla(fc, cfg)
         task.start()
         return task
 

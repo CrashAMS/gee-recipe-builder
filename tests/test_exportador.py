@@ -133,3 +133,30 @@ def test_cancelar_por_id_usa_cancel_task_y_relevanta(monkeypatch):
     monkeypatch.setattr(ee.data, "cancelTask", boom)
     with pytest.raises(RuntimeError):
         ExportadorGEE.cancelar_por_id("T1")
+
+
+# --- F9: tabla a Drive ---
+def test_construir_task_tabla_llama_export_table_to_drive(monkeypatch):
+    import ee
+    from app.gee.exportador import ConfigExportTabla, construir_task_tabla
+    capturado = {}
+
+    def fake_to_drive(**kwargs):
+        capturado.update(kwargs)
+        return "TASK_TABLA"
+
+    monkeypatch.setattr(ee.batch.Export.table, "toDrive", fake_to_drive)
+    cfg = ConfigExportTabla("mi tabla", "mi tabla", "Carpeta", ("lote", "NDVI_mean"))
+    assert construir_task_tabla("FC", cfg) == "TASK_TABLA"
+    assert capturado == dict(collection="FC", description="mi_tabla", folder="Carpeta",
+                             fileNamePrefix="mi_tabla", fileFormat="CSV",
+                             selectors=["lote", "NDVI_mean"])
+
+
+def test_construir_task_de_imagen_no_cambia(monkeypatch):
+    import ee
+    llamado = []
+    monkeypatch.setattr(ee.batch.Export.table, "toDrive", lambda **k: llamado.append(k))
+    monkeypatch.setattr(ee.batch.Export.image, "toDrive", lambda **k: "IMG_TASK")
+    cfg = ConfigExport("x", "x", DestinoExport.DRIVE, region="G", carpeta_drive="C")
+    assert construir_task("IMG", cfg) == "IMG_TASK" and llamado == []

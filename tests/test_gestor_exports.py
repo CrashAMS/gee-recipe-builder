@@ -262,3 +262,34 @@ def test_registro_no_escribible_no_mata_el_seguimiento(qtbot, tmp_path, sesiones
     g.lanzado.connect(lambda c, t: lanzados.append(t))
     g.lanzar(None, _CFG)
     assert lanzados == ["T1"] and exp.consultas == ["T1"]
+
+
+# --- F9: lanzar_tabla ---
+def test_lanzar_tabla_registra_destino_drive_tabla_con_carpeta(qtbot, tmp_path, sesiones):
+    from app.gee.exportador import ConfigExportTabla
+
+    class ExpTabla(FakeExportador):
+        def lanzar_tabla(self, fc, cfg):
+            self.recibido = (fc, cfg)
+            return SimpleNamespace(id="TT1")
+
+    exp = ExpTabla(estados=("RUNNING",))
+    g = _gestor(tmp_path, exp, pool=PoolInerte())
+    w = None
+    cfg = ConfigExportTabla("tabla_NDVI", "tabla_NDVI", "GEE_exports", ("lote", "NDVI_mean"))
+    clave = g.lanzar_tabla("FC", cfg, clave="kt")
+    w = g._lanzadores[clave]
+    w.run()
+    assert exp.recibido == ("FC", cfg)
+    e = g.registro.obtener("TT1")
+    assert e["destino"] == "drive-tabla" and e["carpeta"] == "GEE_exports" and e["nombre"] == "tabla_NDVI"
+
+
+def test_panel_muestra_drive_tabla_csv(qtbot, tmp_path):
+    from app.ui.panel_exports import PanelExports
+    reg = RegistroExports(tmp_path / "exports.json")
+    reg.agregar(nueva_entrada("TT1", "tabla_NDVI", "drive-tabla", "GEE_exports", estado="corriendo"))
+    panel = PanelExports(GestorExports(registro=reg, exportador=FakeExportador(), pool=PoolInerte(),
+                                       intervalo_ms=0))
+    qtbot.addWidget(panel)
+    assert panel.tabla.item(0, 1).text() == "Drive (tabla CSV): GEE_exports"

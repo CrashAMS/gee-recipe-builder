@@ -146,3 +146,27 @@ def test_indices_producto_periodo_invalidos(mutar):
     mutar(d["receta"])
     with pytest.raises(RecetaJSONInvalida):
         desde_json(json.dumps(d))
+
+
+def test_ida_y_vuelta_receta_tabla_con_fc_y_properties(shp_lotes):
+    from app.dominio.aoi import FuenteAOI
+    fc = FuenteAOI.desde_archivo_features(shp_lotes)
+    r = _receta(producto="tabla_poligonos", features=fc)
+    cargada = desde_json(a_json(r, {"tipo": "shapefile", "ruta": str(shp_lotes)}))
+    assert cargada.receta.features == json.loads(json.dumps(fc))   # shapely da tuplas; JSON, listas
+    assert cargada.receta.producto.value == "tabla_poligonos"
+    props = cargada.receta.features["features"][1]["properties"]
+    assert props == {"lote": "L2", "fecha": "2024-02-01", "ha": None}
+
+
+def test_features_invalidas_en_json_levantan():
+    texto = json.loads(a_json(_receta()))
+    texto["receta"]["features"] = {"type": "Polygon"}
+    with pytest.raises(RecetaJSONInvalida, match="features"):
+        desde_json(json.dumps(texto))
+
+
+def test_features_solo_con_tabla():
+    fc = {"type": "FeatureCollection", "features": []}
+    with pytest.raises(ValueError, match="tabla"):
+        _receta(features=fc)

@@ -13,12 +13,13 @@ from PySide6.QtCore import Qt, QThreadPool, QTimer
 
 from app.dominio.compilador import dialecto_js, dialecto_python
 from app import recientes
-from app.dominio.errores import DemasiadosPeriodos, RecetaJSONInvalida
+from app.dominio.errores import ColumnaTablaEnConflicto, DemasiadosPeriodos, RecetaJSONInvalida
 from app.dominio.periodos import periodos
-from app.dominio import catalogo
+from app.dominio import catalogo, tabla_poligonos
 from app.dominio.receta import Producto, Salida, nombre_bandas
 from app.dominio.receta_json import a_json, desde_json
 from app.gee import config
+from app.gee.exportador import ConfigExportTabla
 from app.mapa.preview import PALETAS, paleta_por_dominio, vis_para_leyenda
 from app.mapa.widget_mapa import QtWebEngineNoDisponible, WidgetMapa
 from app.ui.dialogos.dialogo_export import DialogoExportDrive
@@ -29,6 +30,7 @@ from app.ui.panel_formulario import PanelFormulario
 from app.ui.visor_script import VisorScript
 from app.ui.workers import (
     WorkerConstruirImagenExport, WorkerConteo, WorkerDescarga, WorkerPreview, WorkerSerieTemporal,
+    WorkerTabla,
 )
 
 # Debounce del auto-refresh de preview al cambiar la receta (decisión #6 F3b):
@@ -50,6 +52,8 @@ class VentanaPrincipal(QMainWindow):
         # Serie temporal (F8): un worker cancelable a la vez + su diálogo no modal.
         self._worker_serie: WorkerSerieTemporal | None = None
         self._dialogo_serie: DialogoSerie | None = None
+        # Tabla por polígono (F9): receta y carpeta del export a Drive en vuelo.
+        self._tabla_en_curso: tuple | None = None
 
         # --- Zona formulario (con scroll) ---
         self.form = PanelFormulario()
@@ -326,13 +330,12 @@ class VentanaPrincipal(QMainWindow):
                 return
             config.guardar_project(pid.strip())
 
-        # Ruteo por producto (F8): la serie no usa `salida`; la tabla llega en F9.
+        # Ruteo por producto: ni la serie ni la tabla usan `salida`.
         if receta.producto is Producto.SERIE_TEMPORAL:
             self._lanzar_serie(receta)
             return
         if receta.producto is Producto.TABLA_POLIGONOS:
-            QMessageBox.information(self, "Tabla por polígono",
-                                    "La tabla por polígono estará disponible en una fase futura.")
+            self._lanzar_tabla(receta)
             return
 
         if receta.salida is Salida.DRIVE:
@@ -420,6 +423,55 @@ class VentanaPrincipal(QMainWindow):
         self._dialogo_serie, self._worker_serie = dlg, worker
         dlg.show()
         self.pool.start(worker)
+
+    # ---- tabla por polígono (F9) ----
+    def _lanzar_tabla(self, receta) -> None:
+        """Elige la rama en el hilo Qt (el nº de features se conoce local): ≤ umbral → CSV local;
+        más → `Export.table.toDrive` vía el gestor de exports."""
+        try:     # colisión de columnas: avisar antes de pedir archivo/carpeta
+            tabla_poligonos.columnas_para(receta.features, receta.indices)
+        except ColumnaTablaEnConflicto as e:
+            QMessageBox.warning(self, "Columna en conflicto", str(e))
+            return
+        nombre = f"tabla_{nombre_bandas(receta.indices)}_{receta.fecha_inicio}_{receta.fecha_fin}"
+        if tabla_poligonos.es_local(receta.features):
+            destino, _ = QFileDialog.getSaveFileName(self, "Guardar tabla CSV", f"{nombre}.csv",
+                                                     "CSV (*.csv)")
+            if not destino:
+                return
+            worker = WorkerTabla(receta, "local", destino)
+            self._tabla_en_curso = None
+        else:
+            n = len(receta.features["features"])
+            carpeta, ok = QInputDialog.getText(
+                self, "Exportar tabla a Drive",
+                f"La tabla tiene {n} polígonos (más de {tabla_poligonos.UMBRAL_TABLA_LOCAL}): "
+                "se exporta como CSV a Google Drive.\nCarpeta de Drive:", text="GEE_exports")
+            if not ok or not carpeta.strip():
+                return
+            worker = WorkerTabla(receta, "drive")
+            self._tabla_en_curso = (receta, nombre, carpeta.strip())
+        self.btn_ejecutar.setEnabled(False)
+        self.btn_ejecutar.setText("Calculando tabla…")
+        worker.senales.terminado.connect(self._on_tabla_ok)
+        worker.senales.error.connect(self._on_tabla_error)
+        worker.senales.finalizado.connect(self._on_fin)
+        self.pool.start(worker)
+
+    def _on_tabla_ok(self, payload) -> None:
+        if self._tabla_en_curso is None:     # rama local: payload = ruta del CSV
+            QMessageBox.information(self, "Listo", f"Tabla guardada en:\n{payload}")
+            return
+        receta, nombre, carpeta = self._tabla_en_curso
+        self._tabla_en_curso = None
+        cfg = ConfigExportTabla(
+            descripcion=nombre, prefijo_archivo=nombre, carpeta_drive=carpeta,
+            selectors=tuple(tabla_poligonos.columnas_para(receta.features, receta.indices)))
+        self.gestor_exports.lanzar_tabla(payload, cfg)
+
+    def _on_tabla_error(self, tipo: str, mensaje: str) -> None:
+        self._tabla_en_curso = None
+        QMessageBox.critical(self, f"Error en la tabla ({tipo})", mensaje)
 
     # ---- camino Drive/Cloud (F4) ----
     def _lanzar_construccion_export(self, receta) -> None:

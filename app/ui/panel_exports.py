@@ -16,7 +16,8 @@ from PySide6.QtWidgets import (
 from app.gee.registro_exports import es_terminal
 
 _COLUMNAS = ("Nombre", "Destino", "Fecha", "Estado", "Link")
-_DESTINOS = {"drive": "Drive", "cloud_storage": "Cloud Storage"}
+_DESTINOS = {"drive": "Drive", "cloud_storage": "Cloud Storage",
+             "drive-tabla": "Drive (tabla CSV)"}
 
 
 class PanelExports(QDockWidget):

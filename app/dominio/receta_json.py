@@ -43,6 +43,10 @@ def _validar_tipos(k: dict) -> None:
         raise RecetaJSONInvalida(f"'producto' debe ser texto (se recibió {k['producto']!r}).")
     if "periodo" in k and k["periodo"] is not None and not isinstance(k["periodo"], str):
         raise RecetaJSONInvalida(f"'periodo' debe ser texto o null (se recibió {k['periodo']!r}).")
+    fc = k.get("features")
+    if fc is not None and not (isinstance(fc, dict) and fc.get("type") == "FeatureCollection"
+                               and isinstance(fc.get("features"), list)):
+        raise RecetaJSONInvalida("'features' debe ser una FeatureCollection GeoJSON o null.")
     for nombre in ("fecha_inicio", "fecha_fin"):
         try:
             date.fromisoformat(k[nombre])

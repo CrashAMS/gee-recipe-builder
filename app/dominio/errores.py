@@ -21,8 +21,12 @@ class MascaraNoDisponibleJS(DominioError):
     """Se pidió máscara de nubes en JS para un sensor sin snippet JS."""
 
 
-class ProductoNoSoportado(DominioError):
-    """El producto de la receta (serie/tabla) todavía no compila a script (F8/F9)."""
+class TablaSinPoligonos(DominioError):
+    """La tabla por polígono se pidió sin FeatureCollection (AOI rectángulo/dibujo)."""
+
+
+class ColumnaTablaEnConflicto(DominioError):
+    """Una property del shapefile coincide con una columna de estadística de la tabla."""
 
 
 class FiltroNubesNoDisponible(DominioError):

@@ -167,12 +167,60 @@ def test_multi_preview_muestra_solo_el_primer_indice():
     assert "img.select('NDVI').getMapId" in dialecto_python.compilar(r)
 
 
+# --- F9: tabla por polígono (FC embebida; rama local/drive por el umbral) ---
+
+def _poligono(i):
+    x = -58.5 + i * 0.01
+    return {"type": "Polygon", "coordinates": [[[x, -34.6], [x + 0.01, -34.6], [x + 0.01, -34.59],
+                                                  [x, -34.59], [x, -34.6]]]}
+
+
+def fc_lotes(n=2):
+    return {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "geometry": _poligono(i), "properties": {"lote": f"L{i + 1}", "ha": 10.5 + i}}
+        for i in range(n)]}
+
+
+TABLA_LOCAL = dict(producto="tabla_poligonos", features=fc_lotes(2))
+TABLA_DRIVE = dict(producto="tabla_poligonos", features=fc_lotes(2), indices=["NDVI", "EVI"])
+
+
+def test_golden_tabla_ndvi_s2_local():
+    r = _receta(**TABLA_LOCAL)
+    check_golden("tabla_ndvi_s2_local.js", dialecto_js.compilar(r))
+    check_golden("tabla_ndvi_s2_local.py", dialecto_python.compilar(r))
+
+
+def test_golden_tabla_ndvi_evi_s2_drive(monkeypatch):
+    from app.dominio import tabla_poligonos
+    monkeypatch.setattr(tabla_poligonos, "UMBRAL_TABLA_LOCAL", 1)
+    r = _receta(**TABLA_DRIVE)
+    check_golden("tabla_ndvi_evi_s2_drive.js", dialecto_js.compilar(r))
+    check_golden("tabla_ndvi_evi_s2_drive.py", dialecto_python.compilar(r))
+
+
 @pytest.mark.parametrize("dialecto", [dialecto_js, dialecto_python], ids=["js", "py"])
-@pytest.mark.parametrize("kw", [dict(producto="tabla_poligonos")], ids=["tabla_poligonos"])
-def test_producto_no_imagen_no_compila(dialecto, kw):
-    from app.dominio.errores import ProductoNoSoportado
-    with pytest.raises(ProductoNoSoportado):
-        dialecto.compilar(_receta(**kw))
+def test_tabla_sin_fc_levanta_error_de_dominio(dialecto):
+    from app.dominio.errores import TablaSinPoligonos
+    with pytest.raises(TablaSinPoligonos):
+        dialecto.compilar(_receta(producto="tabla_poligonos"))
+
+
+@pytest.mark.parametrize("dialecto", [dialecto_js, dialecto_python], ids=["js", "py"])
+def test_tabla_colision_de_columna_levanta(dialecto):
+    from app.dominio.errores import ColumnaTablaEnConflicto
+    fc = fc_lotes(1)
+    fc["features"][0]["properties"]["NDVI_mean"] = 1.0
+    with pytest.raises(ColumnaTablaEnConflicto):
+        dialecto.compilar(_receta(producto="tabla_poligonos", features=fc))
+
+
+@pytest.mark.parametrize("dialecto", [dialecto_js, dialecto_python], ids=["js", "py"])
+def test_tabla_un_reduce_regions_por_indice_sin_salida_de_imagen(dialecto):
+    s = dialecto.compilar(_receta(**TABLA_DRIVE))
+    assert s.count("reduceRegions") == 2
+    assert "getDownloadURL" not in s and "Export.image" not in s
+    assert "EVI_std" in s and "NDVI_n" in s
 
 
 # --- F8: serie temporal (períodos literales del generador, sin reductor+clip+salida) ---

@@ -26,10 +26,13 @@ SALIDAS = [  # (etiqueta, valor, habilitada) — valores = Salida.*.value de F1 
     ("Drive / Cloud", "drive", True),
     ("Preview en mapa", "preview", True),
 ]
-PRODUCTOS = [  # (etiqueta, Producto) — la tabla por polígono se suma en F9
+PRODUCTOS = [  # (etiqueta, Producto)
     ("Imagen (GeoTIFF)", Producto.IMAGEN),
     ("Serie temporal", Producto.SERIE_TEMPORAL),
+    ("Tabla por polígono", Producto.TABLA_POLIGONOS),
 ]
+_TIP_TABLA = "Media, mínimo, máximo, desvío y n de cada índice por polígono, conservando los atributos del archivo."
+_TIP_TABLA_NO = "Requiere un shapefile o GeoJSON con polígonos; no disponible con rectángulo ni dibujo"
 _ETIQUETAS_PERIODO = {"mensual": "Mensual", "16_dias": "16 días", "anual": "Anual"}
 
 
@@ -45,6 +48,8 @@ class PanelFormulario(QWidget):
         self._extras: list[str] = []         # índices tildados además del principal, en orden de tildado
         self._filtrados: list = []           # resultado vigente de catalogo.buscar (contenido de la lista)
         self._cache_sensores: dict[str, frozenset[str]] = {}
+        self._features_aoi: dict | None = None   # FeatureCollection del AOI-archivo (solo se relee al cambiar el AOI)
+        self._cargando = False                   # True durante cargar_receta (el AOI se evalúa al final)
 
         # --- Índice (primera decisión, index-first) ---
         caja_indice = QGroupBox("1 · Índice")
@@ -167,6 +172,8 @@ class PanelFormulario(QWidget):
         self.fecha_inicio.dateChanged.connect(self._aplicar_limites_fechas)
         self.fecha_fin.dateChanged.connect(self._aplicar_limites_fechas)
         self.combo_producto.currentIndexChanged.connect(self._on_producto)
+        # Antes del bucle de abajo: la FC cacheada debe estar al día cuando `cambiado` llega a receta_actual.
+        self.selector_aoi.cambiado.connect(self._on_aoi_cambiado)
         for sig in (
             self.panel_params.cambiado, self.selector_aoi.cambiado,
             self.fecha_inicio.dateChanged, self.fecha_fin.dateChanged,
@@ -176,6 +183,7 @@ class PanelFormulario(QWidget):
             self.combo_producto.currentIndexChanged, self.combo_periodo.currentIndexChanged,
         ):
             sig.connect(self.cambiado)
+        self._on_aoi_cambiado()
         self._on_producto()
 
         self._on_indice()  # inicializa sensor + params del primer índice
@@ -389,11 +397,41 @@ class PanelFormulario(QWidget):
         return Producto(self.combo_producto.currentData())
 
     def _on_producto(self) -> None:
-        """Período visible solo con serie; con serie la salida no aplica (se deshabilita).
+        """Período visible solo con serie; con serie o tabla la salida no aplica (se deshabilita).
         No emite `cambiado`: lo hace la conexión directa del combo."""
-        serie = self.producto_actual() is Producto.SERIE_TEMPORAL
-        self._form_resto.setRowVisible(self.combo_periodo, serie)
-        self.combo_salida.setEnabled(not serie)
+        prod = self.producto_actual()
+        self._form_resto.setRowVisible(self.combo_periodo, prod is Producto.SERIE_TEMPORAL)
+        self.combo_salida.setEnabled(prod is Producto.IMAGEN)
+
+    def _leer_features(self) -> dict | None:
+        """FeatureCollection del AOI si es un archivo (shapefile/GeoJSON) con ≥1 feature; si no, None."""
+        d = self.selector_aoi.descriptor()
+        if not d or d.get("tipo") not in {"shapefile", "geojson"} or not d.get("ruta"):
+            return None
+        try:
+            return FuenteAOI.desde_archivo_features(d["ruta"])
+        except FuenteAOIError:
+            return None     # el error al usuario lo da receta_actual vía desde_descriptor
+
+    def _on_aoi_cambiado(self) -> None:
+        """Cambió el AOI: relee las features (única lectura, no por tecla) y habilita/deshabilita la tabla."""
+        if self._cargando:
+            return
+        self._features_aoi = self._leer_features()
+        self._actualizar_habilitacion_tabla()
+
+    def _actualizar_habilitacion_tabla(self) -> bool:
+        """Habilita 'Tabla por polígono' solo con features. Devuelve False si estaba elegida y volvió
+        a Imagen por falta de features."""
+        habilitada = self._features_aoi is not None
+        idx = self.combo_producto.findData(Producto.TABLA_POLIGONOS)
+        self.combo_producto.model().item(idx).setEnabled(habilitada)
+        self.combo_producto.setItemData(
+            idx, _TIP_TABLA if habilitada else _TIP_TABLA_NO, Qt.ItemDataRole.ToolTipRole)
+        if not habilitada and self.producto_actual() is Producto.TABLA_POLIGONOS:
+            self.combo_producto.setCurrentIndex(self.combo_producto.findData(Producto.IMAGEN))
+            return False
+        return True
 
     def _on_escala_editada(self) -> None:
         self._escala_manual = True
@@ -454,6 +492,10 @@ class PanelFormulario(QWidget):
         except FuenteAOIError as e:
             self._error_aoi = str(e)
             return None
+        tabla = self.producto_actual() is Producto.TABLA_POLIGONOS
+        if tabla and self._features_aoi is None:
+            self._error_aoi = _TIP_TABLA_NO
+            return None
         return Receta(
             indices=self.indices_seleccionados(),                 # strings, no objetos Indice; [0] = principal
             sensor=sen.collection_id,                             # string, no el objeto Sensor
@@ -470,14 +512,16 @@ class PanelFormulario(QWidget):
             producto=self.producto_actual(),
             periodo=(self.combo_periodo.currentData()
                      if self.producto_actual() is Producto.SERIE_TEMPORAL else None),
+            features=self._features_aoi if tabla else None,
         )
 
     def cargar_receta(self, cargada) -> list[str]:
         """Inverso de `receta_actual`: vuelca una `RecetaCargada` en los widgets y emite
         `cambiado` UNA vez al final. Devuelve avisos (AOI degradado, valores no aplicables).
         Levanta ValueError (form intacto) si algún índice no existe, o si el sensor no existe
-        o no es común a todos los índices. Imagen y serie (con su período) se restauran; la tabla
-        por polígono (F9) todavía no: avisa y queda como imagen."""
+        o no es común a todos los índices. Imagen, serie (con su período) y tabla por polígono se restauran; la
+        tabla necesita un AOI-archivo con polígonos: si el cargado no los tiene (bbox, dibujo o
+        archivo ausente) avisa y queda como imagen."""
         r = cargada.receta
         cat = catalogo.cargar_catalogo()
         desconocidos = [i for i in r.indices if i not in cat]
@@ -495,11 +539,8 @@ class PanelFormulario(QWidget):
             raise ValueError(f"El índice '{primero}' no existe en el catálogo.")
         avisos: list[str] = []
         idx_prod = self.combo_producto.findData(r.producto)
-        if idx_prod < 0:     # tabla_poligonos hasta F9
-            avisos.append(
-                f"El producto '{r.producto.value}' todavía no está disponible: se cargó como imagen.")
-            idx_prod = self.combo_producto.findData(Producto.IMAGEN)
         self.blockSignals(True)      # _on_indice/_on_sensor/params emiten adentro
+        self._cargando = True        # el AOI se evalúa una vez, al final (set_descriptor limpia antes)
         try:
             self.combo_indice.blockSignals(True)
             self.combo_indice.setCurrentIndex(idx_ind)
@@ -560,7 +601,14 @@ class PanelFormulario(QWidget):
                           else "La receta no traía descriptor de zona")
                 avisos.append(f"{motivo}: se cargó la geometría embebida como zona dibujada.")
                 self.selector_aoi.set_descriptor({"tipo": "geojson-dict", "geojson": r.geometria})
+            self._cargando = False
+            self._features_aoi = self._leer_features()
+            if not self._actualizar_habilitacion_tabla():
+                avisos.append(
+                    "La tabla por polígono necesita un shapefile o GeoJSON con polígonos: "
+                    "se cargó como imagen.")
         finally:
+            self._cargando = False
             self.combo_indice.blockSignals(False)
             self.combo_sensor.blockSignals(False)
             self.blockSignals(False)
