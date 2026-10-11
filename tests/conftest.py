@@ -54,8 +54,8 @@ def mapa_stub(monkeypatch):
             self.geometria_actual = None
             self.previews_cargados = []
 
-        def cargar_preview(self, url_format: str) -> None:
-            self.previews_cargados.append(url_format)
+        def cargar_preview(self, url_format: str, vis_leyenda: dict | None = None) -> None:
+            self.previews_cargados.append((url_format, vis_leyenda))
 
         def limpiar_preview(self) -> None:
             self.previews_cargados.clear()

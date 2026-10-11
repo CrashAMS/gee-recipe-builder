@@ -58,8 +58,11 @@ class WidgetMapa(QWidget):
         """GeoJSON dict de la AOI viva (o None). Lo lee 'Aceptar AOI'."""
         return self._bridge.ultima_geometria
 
-    def cargar_preview(self, url_format: str) -> None:
-        self._view.page().runJavaScript(f"cargarPreview({json.dumps(url_format)});")
+    def cargar_preview(self, url_format: str, vis_leyenda: dict | None = None) -> None:
+        """Pinta los tiles; `vis_leyenda` (min/max/palette ya normalizados + nota opcional)
+        dibuja la leyenda. Sin él, se quita la leyenda."""
+        self._view.page().runJavaScript(
+            f"cargarPreview({json.dumps(url_format)}, {json.dumps(vis_leyenda)});")
 
     def limpiar_preview(self) -> None:
         self._view.page().runJavaScript("limpiarPreview();")

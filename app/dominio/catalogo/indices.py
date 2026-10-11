@@ -1,6 +1,7 @@
 """CatálogoÍndices — carga y modelo de los índices ASI vendorizados (tag 0.11.0)."""
 from __future__ import annotations
 import json
+import unicodedata
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -98,7 +99,40 @@ def sensores_de_indice(short_name: str) -> list[str]:
     return sensores_compatibles(idx.bandas_requeridas)
 
 
-def buscar(texto: str) -> list[Indice]:
-    t = texto.lower()
-    return [i for i in cargar_catalogo().values()
-            if t in i.short_name.lower() or t in i.long_name.lower()]
+# Etiquetas en español de los dominios de aplicación del catálogo (radar excluido).
+ETIQUETAS_DOMINIO: dict[str, str] = {
+    "vegetation": "Vegetación", "water": "Agua", "burn": "Quemado", "soil": "Suelo",
+    "snow": "Nieve", "urban": "Urbano", "clouds": "Nubes", "kernel": "Kernel",
+}
+
+
+def _norm(texto: str) -> str:
+    """Minúsculas y sin acentos, para comparar sin sensibilidad a ninguno de los dos."""
+    return "".join(c for c in unicodedata.normalize("NFD", texto.lower())
+                   if unicodedata.category(c) != "Mn")
+
+
+def etiqueta_dominio(dominio: str) -> str:
+    return ETIQUETAS_DOMINIO.get(dominio, dominio.capitalize())
+
+
+def listar_dominios() -> list[str]:
+    """Dominios presentes en el catálogo cargado (sin radar), ordenados por etiqueta ES."""
+    doms = {i.application_domain for i in cargar_catalogo().values()}
+    return sorted(doms, key=lambda d: _norm(etiqueta_dominio(d)))
+
+
+def buscar(texto: str = "", dominio: str | None = None) -> list[Indice]:
+    """Índices cuyo texto matchea `short_name`, `long_name` o la etiqueta ES del dominio
+    (insensible a mayúsculas y acentos), opcionalmente restringidos a un `dominio`.
+    Sin texto ni dominio devuelve todo el catálogo."""
+    t = _norm(texto.strip())
+    salida = []
+    for i in cargar_catalogo().values():
+        if dominio and i.application_domain != dominio:
+            continue
+        if t and not (t in _norm(i.short_name) or t in _norm(i.long_name)
+                      or t in _norm(etiqueta_dominio(i.application_domain))):
+            continue
+        salida.append(i)
+    return salida

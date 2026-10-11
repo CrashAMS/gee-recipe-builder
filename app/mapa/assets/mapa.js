@@ -1,4 +1,4 @@
-let map, bridge = null, capaAOI = null, capaPreview = null;
+let map, bridge = null, capaAOI = null, capaPreview = null, controlLeyenda = null;
 
 function initMapa() {
   map = L.map('map').setView([-34.6, -58.4], 5);
@@ -32,12 +32,40 @@ function emitirAOI(layer) {
 }
 
 // ── Python→JS (via runJavaScript) ──
-function cargarPreview(urlFormat) {
+function cargarPreview(urlFormat, vis) {
+  if (!map) return;
   if (capaPreview) map.removeLayer(capaPreview);
   capaPreview = L.tileLayer(urlFormat, { maxZoom: 20, opacity: 0.75 }).addTo(map);
+  if (vis) mostrarLeyenda(vis); else limpiarLeyenda();
 }
 function limpiarPreview() {
+  if (!map) return;
   if (capaPreview) { map.removeLayer(capaPreview); capaPreview = null; }
+  limpiarLeyenda();
+}
+// vis = {min, max, palette: [colores CSS ya normalizados en Python], nota?: string}
+function mostrarLeyenda(vis) {
+  if (!map) return;
+  limpiarLeyenda();   // idempotente: una sola leyenda viva
+  controlLeyenda = L.control({ position: 'bottomright' });
+  controlLeyenda.onAdd = function () {
+    const div = L.DomUtil.create('div', 'leyenda-preview');
+    const colores = (vis.palette && vis.palette.length > 1) ? vis.palette : ['#ffffff', '#008000'];
+    const barra = L.DomUtil.create('div', 'leyenda-barra', div);
+    barra.style.background = 'linear-gradient(to right, ' + colores.join(', ') + ')';
+    const etiquetas = L.DomUtil.create('div', 'leyenda-etiquetas', div);
+    const fmt = (v) => String(Number(Number(v).toFixed(3)));
+    etiquetas.innerHTML = '<span>' + fmt(vis.min) + '</span><span>' + fmt(vis.max) + '</span>';
+    if (vis.nota) {
+      const nota = L.DomUtil.create('div', 'leyenda-nota', div);
+      nota.textContent = '(' + vis.nota + ')';
+    }
+    return div;
+  };
+  controlLeyenda.addTo(map);
+}
+function limpiarLeyenda() {
+  if (controlLeyenda) { controlLeyenda.remove(); controlLeyenda = null; }
 }
 
 document.addEventListener('DOMContentLoaded', initMapa);

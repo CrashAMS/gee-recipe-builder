@@ -7,6 +7,7 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QScrollArea, QSplitter,
     QPushButton, QLabel, QFileDialog, QInputDialog, QMessageBox,
+    QComboBox, QDoubleSpinBox, QHBoxLayout,
 )
 from PySide6.QtCore import Qt, QThreadPool, QTimer
 
@@ -16,6 +17,7 @@ from app.dominio.errores import RecetaJSONInvalida
 from app.dominio.receta import Salida
 from app.dominio.receta_json import a_json, desde_json
 from app.gee import config
+from app.mapa.preview import PALETAS, paleta_por_dominio, vis_para_leyenda
 from app.mapa.widget_mapa import QtWebEngineNoDisponible, WidgetMapa
 from app.ui.dialogos.dialogo_export import DialogoExportDrive
 from app.ui.panel_formulario import PanelFormulario
@@ -66,6 +68,25 @@ class VentanaPrincipal(QMainWindow):
         lay_mapa.setContentsMargins(0, 0, 0, 0)
         lay_mapa.addWidget(self._mapa)
         lay_mapa.addWidget(self.btn_preview)
+        # Paleta y rango manual del preview: solo UI, no entran en la Receta ni en los scripts.
+        self.combo_paleta = QComboBox()
+        for nombre in PALETAS:
+            self.combo_paleta.addItem(nombre.capitalize(), nombre)
+        self.spin_min = QDoubleSpinBox()
+        self.spin_max = QDoubleSpinBox()
+        for sp, tip in ((self.spin_min, "Mínimo del preview"), (self.spin_max, "Máximo del preview")):
+            sp.setDecimals(4)
+            sp.setRange(-1_000_000.0, 1_000_000.0)
+            sp.setToolTip(tip)
+        self.spin_max.setValue(1.0)
+        self.btn_auto = QPushButton("Auto")
+        self.btn_auto.setToolTip("Volver al rango automático (percentiles 2-98)")
+        fila_vis = QHBoxLayout()
+        fila_vis.addWidget(self.combo_paleta)
+        fila_vis.addWidget(self.spin_min)
+        fila_vis.addWidget(self.spin_max)
+        fila_vis.addWidget(self.btn_auto)
+        lay_mapa.addLayout(fila_vis)
         lay_mapa.addWidget(self.lbl_preview)
         panel_mapa = QWidget()
         panel_mapa.setLayout(lay_mapa)
@@ -85,6 +106,9 @@ class VentanaPrincipal(QMainWindow):
         self.setCentralWidget(splitter)
         self._armar_menu()
 
+        self._override_vis = False      # True: el preview usa min/max de los spinbox (sin stretch)
+        self._dominio_paleta: str | None = None
+        self._ultimo_resultado = None
         # --- Wiring de actualización en vivo ---
         self.form.cambiado.connect(self._on_form_cambiado)
         self.visor.dialecto_cambiado.connect(self._actualizar_script)
@@ -104,6 +128,11 @@ class VentanaPrincipal(QMainWindow):
         self._debounce_preview.setInterval(_DEBOUNCE_PREVIEW_MS)
         self._debounce_preview.timeout.connect(lambda: self._lanzar_preview(interactivo=False))
         self.form.cambiado.connect(self._debounce_preview.start)
+        self.combo_paleta.currentIndexChanged.connect(self._on_paleta_cambiada)
+        self.spin_min.valueChanged.connect(self._on_rango_manual)
+        self.spin_max.valueChanged.connect(self._on_rango_manual)
+        self.btn_auto.clicked.connect(self._on_auto)
+        self._sincronizar_paleta_dominio()
 
         print("VentanaPrincipal lista — form poblado, visor inicializado, mapa embebido")
 
@@ -168,6 +197,35 @@ class VentanaPrincipal(QMainWindow):
         receta = self.form.receta_actual()
         self._actualizar_script(receta)
         self.form.actualizar_estimacion(receta)
+        self._override_vis = False        # cambio de receta: el rango vuelve a automático
+        self._ultimo_resultado = None
+        self._sincronizar_paleta_dominio()
+
+    def _sincronizar_paleta_dominio(self) -> None:
+        """La paleta vuelve al default del dominio solo si el dominio del índice cambió."""
+        ind = self.form._indice_actual()
+        if ind is None or ind.application_domain == self._dominio_paleta:
+            return
+        self._dominio_paleta = ind.application_domain
+        pos = self.combo_paleta.findData(paleta_por_dominio(ind.application_domain))
+        self.combo_paleta.blockSignals(True)
+        self.combo_paleta.setCurrentIndex(pos)
+        self.combo_paleta.blockSignals(False)
+
+    def _on_paleta_cambiada(self) -> None:
+        # Con un preview ya calculado se conserva su min/max vigente (override); sin él, solo
+        # cambia la paleta del próximo stretch automático.
+        if self._ultimo_resultado is not None:
+            self._override_vis = True
+        self._debounce_preview.start()
+
+    def _on_rango_manual(self) -> None:
+        self._override_vis = True
+        self._debounce_preview.start()
+
+    def _on_auto(self) -> None:
+        self._override_vis = False
+        self._debounce_preview.start()
 
     def _actualizar_script(self, receta=_SIN_ARMAR) -> None:
         if receta is _SIN_ARMAR:
@@ -306,18 +364,36 @@ class VentanaPrincipal(QMainWindow):
                 return
             config.guardar_project(pid.strip())
 
+        paleta = PALETAS[self.combo_paleta.currentData()]
+        vis_params = None
+        if self._override_vis:
+            if self.spin_min.value() >= self.spin_max.value():
+                self.lbl_preview.setText("Rango manual inválido: el mínimo debe ser menor que el máximo.")
+                return
+            vis_params = {"min": self.spin_min.value(), "max": self.spin_max.value(),
+                          "palette": paleta}
         self._preview_en_curso = True
         self.btn_preview.setEnabled(False)
         self.btn_preview.setText("Generando preview…")
         self.lbl_preview.setText("Generando preview… (calculando en GEE, puede tardar unos segundos)")
-        worker = WorkerPreview(receta)
+        worker = WorkerPreview(receta, vis_params=vis_params, paleta=paleta)
         worker.senales.terminado.connect(self._on_preview_ok)
         worker.senales.error.connect(self._on_preview_error)
         worker.senales.finalizado.connect(self._on_preview_fin)
         self.pool.start(worker)
 
-    def _on_preview_ok(self, url_format) -> None:
-        self._mapa.cargar_preview(url_format)
+    def _on_preview_ok(self, resultado) -> None:
+        """`resultado`: PreviewResultado. Pinta tiles + leyenda y vuelca min/max a los
+        spinbox sin disparar otro preview."""
+        self._ultimo_resultado = resultado
+        nota = "" if resultado.estirado else ("rango manual" if self._override_vis
+                                              else "rango no estimado")
+        leyenda = {**vis_para_leyenda(resultado.vis), "nota": nota}
+        self._mapa.cargar_preview(resultado.url, leyenda)
+        for sp, clave in ((self.spin_min, "min"), (self.spin_max, "max")):
+            sp.blockSignals(True)
+            sp.setValue(float(resultado.vis[clave]))
+            sp.blockSignals(False)
         self.lbl_preview.setText("Preview cargado ✓ — el índice se pintó sobre el mapa.")
 
     def _on_preview_error(self, tipo: str, mensaje: str) -> None:

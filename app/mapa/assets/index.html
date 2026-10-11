@@ -4,7 +4,14 @@
   <meta charset="utf-8">
   <link rel="stylesheet" href="leaflet/leaflet.css">
   <link rel="stylesheet" href="geoman/leaflet-geoman.css">
-  <style> html, body, #map { height: 100%; margin: 0; } </style>
+  <style>
+    html, body, #map { height: 100%; margin: 0; }
+    .leyenda-preview { background: rgba(255,255,255,.9); padding: 6px 8px; border-radius: 4px;
+      box-shadow: 0 0 4px rgba(0,0,0,.4); font: 12px sans-serif; min-width: 140px; }
+    .leyenda-barra { height: 12px; border: 1px solid #888; }
+    .leyenda-etiquetas { display: flex; justify-content: space-between; margin-top: 2px; }
+    .leyenda-nota { color: #a15c00; font-size: 11px; margin-top: 2px; }
+  </style>
 </head>
 <body>
   <div id="map"></div>

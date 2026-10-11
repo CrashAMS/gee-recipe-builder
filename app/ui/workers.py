@@ -72,24 +72,35 @@ class WorkerDescarga(QRunnable):
 class WorkerPreview(QRunnable):
     """Genera la URL de tiles del preview (F3b) en QThreadPool — mismo patrón robusto
     que WorkerDescarga. Todo el pipeline GEE (auth + imagen + stretch + getMapId) corre
-    en este único hilo. `terminado` emite la url_format lista para L.tileLayer."""
+    en este único hilo. `terminado` emite un `PreviewResultado(url, vis, estirado)`.
+    `vis_params` (min/max/palette) es el override manual de la UI: con él no se estira
+    (se re-pide getMapId tal cual). Sin él se estira por percentiles usando `paleta`."""
 
-    def __init__(self, receta: Receta, project_id: str | None = None) -> None:
+    def __init__(self, receta: Receta, project_id: str | None = None,
+                 vis_params: dict | None = None, paleta: list[str] | None = None) -> None:
         super().__init__()
         self.receta = receta
         self.project_id = project_id
+        self.vis_params = vis_params
+        self.paleta = paleta
         self.senales = SenalesWorker()
 
     @Slot()
     def run(self) -> None:
         try:
-            from app.mapa.preview import url_tiles_para
+            from app.mapa.preview import VIS_PARAMS_DEFAULT, url_tiles_para
 
             auth.asegurar_sesion(self.project_id)
             sol = solicitud_desde_receta(self.receta)
             imagen = ejecutor.construir_imagen(sol)
-            url = url_tiles_para(imagen)
-            self.senales.terminado.emit(url)
+            if self.vis_params is not None:
+                resultado = url_tiles_para(imagen, self.vis_params, auto_stretch=False)
+            else:
+                base = dict(VIS_PARAMS_DEFAULT)
+                if self.paleta:
+                    base["palette"] = list(self.paleta)
+                resultado = url_tiles_para(imagen, base, auto_stretch=True)
+            self.senales.terminado.emit(resultado)
         except ErrorAuthGEE as e:
             self.senales.error.emit("auth", str(e))
         except ErrorEjecucionGEE as e:

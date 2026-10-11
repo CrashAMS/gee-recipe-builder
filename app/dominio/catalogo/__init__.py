@@ -1,5 +1,8 @@
 """API pública del CatálogoÍndices — lo único que F3a debe importar."""
-from app.dominio.catalogo.indices import cargar_catalogo, sensores_de_indice, Indice, ParametroAjustable
+from app.dominio.catalogo.indices import (
+    cargar_catalogo, sensores_de_indice, Indice, ParametroAjustable,
+    buscar, listar_dominios, etiqueta_dominio, ETIQUETAS_DOMINIO,
+)
 from app.dominio.catalogo.sensores import PERFILES, sensores_con_mascara, PerfilSensor
 
 

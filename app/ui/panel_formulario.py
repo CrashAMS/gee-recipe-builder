@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QFormLayout, QComboBox, QCheckBox, QDateEdit, QLabel, QGroupBox,
-    QSpinBox,
+    QSpinBox, QLineEdit,
 )
 from pathlib import Path
 
@@ -48,12 +48,20 @@ class PanelFormulario(QWidget):
         # nombre completo queda visible en lbl_desc debajo del combo.
         self.combo_indice.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.combo_indice.setMinimumContentsLength(28)
-        self._indices = catalogo.listar_indices()
-        for ind in self._indices:
-            self.combo_indice.addItem(f"{ind.short_name} — {ind.long_name}", ind)
+        # Buscador: texto libre + dominio. Filtran el contenido de combo_indice (selección única).
+        self.edit_buscar = QLineEdit()
+        self.edit_buscar.setPlaceholderText("Buscar por sigla, nombre o dominio…")
+        self.edit_buscar.setClearButtonEnabled(True)
+        self.combo_dominio = QComboBox()
+        self.combo_dominio.addItem("Todos los dominios", None)
+        for dom in catalogo.listar_dominios():
+            self.combo_dominio.addItem(catalogo.etiqueta_dominio(dom), dom)
+        self._poblar_combo_indices(catalogo.buscar())
         self.lbl_desc = QLabel()
         self.lbl_desc.setWordWrap(True)
         self.panel_params = PanelParametros()
+        f_idx.addRow("Buscar", self.edit_buscar)
+        f_idx.addRow("Dominio", self.combo_dominio)
         f_idx.addRow("Índice", self.combo_indice)
         f_idx.addRow(self.lbl_desc)
         f_idx.addRow("Parámetros", self.panel_params)
@@ -111,6 +119,8 @@ class PanelFormulario(QWidget):
 
         # --- Wiring ---
         self.combo_indice.currentIndexChanged.connect(self._on_indice)
+        self.edit_buscar.textChanged.connect(self._on_filtro_indices)
+        self.combo_dominio.currentIndexChanged.connect(self._on_filtro_indices)
         self.combo_sensor.currentIndexChanged.connect(self._on_sensor)
         self.spin_escala.valueChanged.connect(self._on_escala_editada)
         self.fecha_inicio.dateChanged.connect(self._aplicar_limites_fechas)
@@ -127,6 +137,50 @@ class PanelFormulario(QWidget):
 
     def _indice_actual(self):
         return self.combo_indice.currentData()
+
+    def _poblar_combo_indices(self, indices) -> bool:
+        """Repuebla `combo_indice` con `indices` conservando la selección si sigue presente.
+        Sin señales (ni `_on_indice` ni `cambiado`). Devuelve True si cambió el índice
+        seleccionado (o quedó vacío), para que el caller decida si repoblar sensor/params."""
+        antes = self._indice_actual()
+        self.combo_indice.blockSignals(True)
+        try:
+            self.combo_indice.clear()
+            for ind in indices:
+                self.combo_indice.addItem(f"{ind.short_name} — {ind.long_name}", ind)
+            if antes is not None:
+                pos = self.combo_indice.findText(f"{antes.short_name} — {antes.long_name}")
+                self.combo_indice.setCurrentIndex(max(pos, 0) if indices else -1)
+        finally:
+            self.combo_indice.blockSignals(False)
+        despues = self._indice_actual()
+        return despues is None or antes is None or despues.short_name != antes.short_name
+
+    def _on_filtro_indices(self) -> None:
+        """Texto o dominio cambiaron: repuebla el combo; un solo `_on_indice` al final."""
+        indices = catalogo.buscar(self.edit_buscar.text(), self.combo_dominio.currentData())
+        cambio = self._poblar_combo_indices(indices)
+        if self._indice_actual() is None:
+            self.lbl_desc.setText("Sin coincidencias")
+            self.panel_params.cargar(())
+            self.combo_sensor.blockSignals(True)
+            self.combo_sensor.clear()
+            self.combo_sensor.blockSignals(False)
+            self.cambiado.emit()          # receta_actual() ahora es None
+        elif cambio:
+            self._on_indice()
+
+    def _limpiar_filtro_indices(self) -> None:
+        """Quita texto y dominio y repuebla el catálogo completo, sin emitir nada."""
+        for w in (self.edit_buscar, self.combo_dominio):
+            w.blockSignals(True)
+        try:
+            self.edit_buscar.clear()
+            self.combo_dominio.setCurrentIndex(0)
+        finally:
+            self.edit_buscar.blockSignals(False)
+            self.combo_dominio.blockSignals(False)
+        self._poblar_combo_indices(catalogo.buscar())
 
     def _sensor_actual(self):
         return self.combo_sensor.currentData()
@@ -242,6 +296,9 @@ class PanelFormulario(QWidget):
         `cambiado` UNA vez al final. Devuelve avisos (AOI degradado, valores no aplicables).
         Levanta ValueError (form intacto) si el índice/sensor no existen en el catálogo."""
         r = cargada.receta
+        if r.indice not in catalogo.cargar_catalogo():
+            raise ValueError(f"El índice '{r.indice}' no existe en el catálogo.")
+        self._limpiar_filtro_indices()   # un filtro activo no debe ocultar el índice a cargar
         idx_ind = next((i for i in range(self.combo_indice.count())
                         if self.combo_indice.itemData(i).short_name == r.indice), -1)
         if idx_ind < 0:
