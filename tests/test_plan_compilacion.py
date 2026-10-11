@@ -6,7 +6,7 @@ from app.dominio.compilador.dialecto_js import ESCALA_JS
 from app.dominio.compilador.plan import (
     FiltroNubes, Indices, Salida, TipoPaso, construir_plan, tipos_renderizados)
 from app.dominio.errores import FiltroNubesNoDisponible, MascaraNoDisponibleJS
-from tests.test_compilador import _receta
+from tests.test_compilador import SERIE_ANUAL, SERIE_MENSUAL, _receta
 
 T = TipoPaso
 
@@ -62,6 +62,9 @@ _RECETAS_GOLDEN = {
     "multi_s2_descarga": dict(indices=["NDVI", "EVI", "NDWI"], parametros={"g": 2.6}),
     "multi_s2_drive": dict(indices=["NDVI", "EVI", "NDWI"], parametros={"g": 2.6},
                            salida=DestinoSalida.DRIVE),
+    # F8: serie temporal (goldens ndvi_s2_serie_mensual / ndvi_evi_s2_serie_anual).
+    "serie_mensual": SERIE_MENSUAL,
+    "serie_anual": SERIE_ANUAL,
 }
 
 
@@ -103,3 +106,22 @@ def test_plan_multi_indice_bandas_en_orden_y_descripcion_compuesta():
     assert plan.paso(T.INDICES).nombres == ("NDVI", "EVI", "NDWI")
     sal = plan.paso(T.SALIDA)
     assert sal.bandas == ("NDVI", "EVI", "NDWI") and sal.descripcion == "NDVI-EVI-NDWI"
+
+
+def test_serie_reemplaza_reductor_y_salida_en_el_plan():
+    from app.dominio.periodos import periodos
+    from app.dominio.receta import Composicion
+    from app.dominio.compilador.plan import Serie
+    plan = construir_plan(_receta(**SERIE_ANUAL))
+    assert plan.tipos == (T.FUENTE, T.FILTRO_FECHAS, T.FILTRO_NUBES, T.MASCARA, T.ESCALA,
+                          T.INDICES, T.SERIE)
+    assert plan.paso(T.SERIE) == Serie(
+        tuple(periodos("2021-06-01", "2023-03-01", "anual")), Composicion.MEDIA,
+        ("NDVI", "EVI"), 10)
+
+
+def test_serie_demasiados_periodos_sale_del_plan():
+    from app.dominio.errores import DemasiadosPeriodos
+    with pytest.raises(DemasiadosPeriodos):
+        construir_plan(_receta(producto="serie_temporal", periodo="mensual",
+                               fecha_inicio="2000-01-01", fecha_fin="2010-01-01"))

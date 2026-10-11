@@ -13,7 +13,7 @@ from app.dominio import catalogo
 from app.dominio.aoi import FuenteAOI, bbox_de
 from app.dominio.estimador import estimar_tamano_descarga, texto_estimacion
 from app.dominio.errores import FuenteAOIError
-from app.dominio.receta import Producto, Receta, Salida
+from app.dominio.receta import PERIODOS, Producto, Receta, Salida
 from app.ui.widget_parametros import PanelParametros
 from app.ui.widget_aoi import SelectorAOI
 
@@ -26,6 +26,11 @@ SALIDAS = [  # (etiqueta, valor, habilitada) — valores = Salida.*.value de F1 
     ("Drive / Cloud", "drive", True),
     ("Preview en mapa", "preview", True),
 ]
+PRODUCTOS = [  # (etiqueta, Producto) — la tabla por polígono se suma en F9
+    ("Imagen (GeoTIFF)", Producto.IMAGEN),
+    ("Serie temporal", Producto.SERIE_TEMPORAL),
+]
+_ETIQUETAS_PERIODO = {"mensual": "Mensual", "16_dias": "16 días", "anual": "Anual"}
 
 
 class PanelFormulario(QWidget):
@@ -125,6 +130,12 @@ class PanelFormulario(QWidget):
                 idx = self.combo_salida.count() - 1
                 self.combo_salida.model().item(idx).setEnabled(False)
                 self.combo_salida.setItemData(idx, "Disponible en una fase futura", 3)  # Qt.ToolTipRole
+        self.combo_producto = QComboBox()
+        for etiqueta, producto in PRODUCTOS:
+            self.combo_producto.addItem(etiqueta, producto)
+        self.combo_periodo = QComboBox()
+        for p in PERIODOS:                     # única fuente de los valores de período
+            self.combo_periodo.addItem(_ETIQUETAS_PERIODO.get(p, p), p)
         self.spin_escala = QSpinBox()
         self.spin_escala.setRange(10, 1000)
         self.spin_escala.setValue(10)
@@ -139,7 +150,10 @@ class PanelFormulario(QWidget):
         self.lbl_estimacion = QLabel()
         self.lbl_estimacion.setWordWrap(True)
         f_r.addRow(self.lbl_estimacion)
+        f_r.addRow("Producto", self.combo_producto)
+        f_r.addRow("Período", self.combo_periodo)
         f_r.addRow("Salida", self.combo_salida)
+        self._form_resto = f_r
         raiz.addWidget(caja_resto)
         raiz.addStretch()
 
@@ -152,14 +166,17 @@ class PanelFormulario(QWidget):
         self.spin_escala.valueChanged.connect(self._on_escala_editada)
         self.fecha_inicio.dateChanged.connect(self._aplicar_limites_fechas)
         self.fecha_fin.dateChanged.connect(self._aplicar_limites_fechas)
+        self.combo_producto.currentIndexChanged.connect(self._on_producto)
         for sig in (
             self.panel_params.cambiado, self.selector_aoi.cambiado,
             self.fecha_inicio.dateChanged, self.fecha_fin.dateChanged,
             self.chk_mascara.toggled, self.chk_nubes.toggled, self.spin_nubes.valueChanged,
             self.combo_comp.currentIndexChanged,
             self.spin_escala.valueChanged, self.combo_salida.currentIndexChanged,
+            self.combo_producto.currentIndexChanged, self.combo_periodo.currentIndexChanged,
         ):
             sig.connect(self.cambiado)
+        self._on_producto()
 
         self._on_indice()  # inicializa sensor + params del primer índice
 
@@ -368,6 +385,16 @@ class PanelFormulario(QWidget):
         self._aplicar_limites_fechas()
         self.cambiado.emit()
 
+    def producto_actual(self) -> Producto:
+        return Producto(self.combo_producto.currentData())
+
+    def _on_producto(self) -> None:
+        """Período visible solo con serie; con serie la salida no aplica (se deshabilita).
+        No emite `cambiado`: lo hace la conexión directa del combo."""
+        serie = self.producto_actual() is Producto.SERIE_TEMPORAL
+        self._form_resto.setRowVisible(self.combo_periodo, serie)
+        self.combo_salida.setEnabled(not serie)
+
     def _on_escala_editada(self) -> None:
         self._escala_manual = True
 
@@ -397,8 +424,8 @@ class PanelFormulario(QWidget):
 
     def actualizar_estimacion(self, receta: Receta | None) -> None:
         """Texto de tamaño estimado bajo la escala; vacío si no hay receta/geometría válida."""
-        if receta is None:
-            self.lbl_estimacion.setText("")
+        if receta is None or receta.producto is not Producto.IMAGEN:
+            self.lbl_estimacion.setText("")   # la estimación de descarga solo aplica a imagen
             return
         try:
             est = estimar_tamano_descarga(bbox_de(receta.geometria), receta.escala,
@@ -440,13 +467,17 @@ class PanelFormulario(QWidget):
             parametros=self.panel_params.valores(),
             max_nubes_pct=(self.spin_nubes.value()
                            if self.chk_nubes.isChecked() and self.chk_nubes.isEnabled() else None),
+            producto=self.producto_actual(),
+            periodo=(self.combo_periodo.currentData()
+                     if self.producto_actual() is Producto.SERIE_TEMPORAL else None),
         )
 
     def cargar_receta(self, cargada) -> list[str]:
         """Inverso de `receta_actual`: vuelca una `RecetaCargada` en los widgets y emite
         `cambiado` UNA vez al final. Devuelve avisos (AOI degradado, valores no aplicables).
         Levanta ValueError (form intacto) si algún índice no existe, o si el sensor no existe
-        o no es común a todos los índices. Con producto distinto de imagen avisa y queda como imagen."""
+        o no es común a todos los índices. Imagen y serie (con su período) se restauran; la tabla
+        por polígono (F9) todavía no: avisa y queda como imagen."""
         r = cargada.receta
         cat = catalogo.cargar_catalogo()
         desconocidos = [i for i in r.indices if i not in cat]
@@ -463,9 +494,11 @@ class PanelFormulario(QWidget):
         if idx_ind < 0:
             raise ValueError(f"El índice '{primero}' no existe en el catálogo.")
         avisos: list[str] = []
-        if r.producto is not Producto.IMAGEN:
+        idx_prod = self.combo_producto.findData(r.producto)
+        if idx_prod < 0:     # tabla_poligonos hasta F9
             avisos.append(
                 f"El producto '{r.producto.value}' todavía no está disponible: se cargó como imagen.")
+            idx_prod = self.combo_producto.findData(Producto.IMAGEN)
         self.blockSignals(True)      # _on_indice/_on_sensor/params emiten adentro
         try:
             self.combo_indice.blockSignals(True)
@@ -508,6 +541,9 @@ class PanelFormulario(QWidget):
                 self.combo_salida.setCurrentIndex(idx_sal)
             else:
                 avisos.append(f"La salida '{r.salida.value}' no está disponible: se dejó la actual.")
+            self.combo_producto.setCurrentIndex(idx_prod)   # _on_producto: período y salida
+            if r.periodo is not None:
+                self.combo_periodo.setCurrentIndex(self.combo_periodo.findData(r.periodo))
             self.spin_escala.setValue(r.escala)
             if self.spin_escala.value() != r.escala:
                 avisos.append(f"Escala {r.escala} m fuera de rango: se ajustó a {self.spin_escala.value()} m.")

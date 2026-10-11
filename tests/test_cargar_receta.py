@@ -166,9 +166,10 @@ def test_receta_con_segundo_indice_desconocido_levanta(ventana):
 
 
 def test_producto_no_imagen_avisa_y_queda_como_imagen(ventana):
-    r = _bbox_receta(producto="serie_temporal", periodo="mensual")
+    # F8: la degradación queda solo para la tabla por polígono (la serie se restaura).
+    r = _bbox_receta(producto="tabla_poligonos")
     avisos = ventana.form.cargar_receta(RecetaCargada(r, BBOX))
-    assert any("serie_temporal" in a for a in avisos)
+    assert any("tabla_poligonos" in a for a in avisos)
     assert ventana.form.receta_actual().producto.value == "imagen"
 
 

@@ -3,7 +3,7 @@ from app.dominio.receta import Receta
 from app.dominio.receta import Salida as DestinoSalida
 from app.dominio.compilador.base import geojson_py, reductor
 from app.dominio.compilador.plan import (
-    PlanCompilacion, Segmento, TipoPaso, construir_plan, exigir_producto_imagen, unir,
+    PlanCompilacion, Segmento, Serie, TipoPaso, construir_plan, exigir_producto_compilable, unir,
     verificar_tipos)
 
 
@@ -14,7 +14,7 @@ def _params_kwargs(parametros: tuple[tuple[str, float], ...]) -> str:
 # Tipos que este renderer sabe emitir (lista explícita: un TipoPaso nuevo falla ruidoso).
 _RENDERIZA = frozenset({
     TipoPaso.FUENTE, TipoPaso.FILTRO_FECHAS, TipoPaso.FILTRO_NUBES, TipoPaso.MASCARA,
-    TipoPaso.ESCALA, TipoPaso.INDICES, TipoPaso.REDUCTOR, TipoPaso.SALIDA})
+    TipoPaso.ESCALA, TipoPaso.INDICES, TipoPaso.REDUCTOR, TipoPaso.SALIDA, TipoPaso.SERIE})
 
 
 def _banda(bandas: tuple[str, ...]) -> str:
@@ -37,6 +37,35 @@ def _cola_salida(plan: PlanCompilacion) -> list[str]:
                 "task.start()"]
     # Preview muestra solo el primer índice (F7 decide qué banda previsualizar).
     return [f"# preview: {_banda(s.bandas[:1])}.getMapId(vis_params) -> tile URL (lo consume F3b)"]
+
+
+def _serie(s: Serie) -> list[str]:
+    """Serie temporal (F8): períodos literales del generador -> FeatureCollection con las
+    columnas del CSV de la app (`periodo_inicio`, `periodo_fin`, `<indice>_mean`, `n_imagenes`)."""
+    lineas = ["periodos = ["] + [f"    ({ini!r}, {fin!r})," for ini, fin in s.periodos] + ["]", ""]
+    bandas = list(s.indices)
+    lineas += [
+        "",
+        "def fila(ini, fin):",
+        "    sub = col.filterDate(ini, fin)",
+        "    n = sub.size()",
+        f"    medias = ee.Dictionary(ee.Algorithms.If(n.gt(0), sub.{reductor(s.reductor)}"
+        f".select({bandas!r}).reduceRegion(",
+        f"        reducer=ee.Reducer.mean(), geometry=aoi, scale={s.escala_m}, maxPixels=1e9), {{}}))",
+        "    props = {'periodo_inicio': ini, 'periodo_fin': fin}",
+    ]
+    for i in s.indices:
+        lineas.append(f"    props[{i + '_mean'!r}] = ee.Algorithms.If("
+                      f"medias.contains({i!r}), medias.get({i!r}), None)")
+    lineas += [
+        "    props['n_imagenes'] = n",
+        "    return ee.Feature(None, props)",
+        "",
+        "",
+        "serie = ee.FeatureCollection([fila(ini, fin) for ini, fin in periodos])",
+        "print(serie.getInfo())",
+    ]
+    return lineas
 
 
 def segmentos(plan: PlanCompilacion) -> list[Segmento]:
@@ -66,6 +95,10 @@ def segmentos(plan: PlanCompilacion) -> list[Segmento]:
     nombres = ", ".join(repr(n) for n in indices.nombres)
     segs.append(((TipoPaso.INDICES,),
                  [f"col = col.spectralIndices([{nombres}]{_params_kwargs(indices.parametros)})"]))
+    serie = plan.paso(TipoPaso.SERIE)
+    if serie:
+        segs.append(((TipoPaso.SERIE,), _serie(serie)))
+        return segs
     segs.append(((TipoPaso.REDUCTOR,),
                  [f"img = col.{reductor(plan.paso(TipoPaso.REDUCTOR).composicion)}.clip(aoi)"]))
     segs.append(((TipoPaso.SALIDA,), _cola_salida(plan)))
@@ -73,5 +106,5 @@ def segmentos(plan: PlanCompilacion) -> list[Segmento]:
 
 
 def compilar(r: Receta) -> str:
-    exigir_producto_imagen(r)
+    exigir_producto_compilable(r)
     return unir(segmentos(construir_plan(r)))

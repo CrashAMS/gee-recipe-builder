@@ -21,6 +21,13 @@ def geojson_py(geom: dict) -> str:
     return repr(geom)               # dict literal válido en Python
 
 
+def js_str(s: str) -> str:
+    """Literal JS entre comillas simples con escapes (strings libres en scripts JS)."""
+    esc = (s.replace("\\", "\\\\").replace("'", "\\'")
+           .replace("\n", "\\n").replace("\r", "\\r"))
+    return f"'{esc}'"
+
+
 def geojson_js(geom: dict) -> str:
     return json.dumps(geom)         # JSON ⊂ JS: objeto literal válido
 

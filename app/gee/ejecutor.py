@@ -46,19 +46,48 @@ def _coleccion_base(sol: SolicitudEjecucion) -> "ee.ImageCollection":
     )
 
 
-def construir_imagen(sol: SolicitudEjecucion) -> ee.Image:
-    """Pipeline [decisión #9]: mask → scale → index (por imagen) → reduce → select → clip."""
-    if sol.reduccion not in _REDUCTORES:
-        raise ValueError(f"Reducción no soportada: {sol.reduccion!r} (opciones: {list(_REDUCTORES)})")
+def construir_coleccion(sol: SolicitudEjecucion) -> "ee.ImageCollection":
+    """Todo lo previo a la reducción (F8): bounds + fechas → filtro de nubes → mask →
+    scale → índices (por imagen). Lo comparten `construir_imagen` y la serie temporal."""
     col = _coleccion_base(sol)
     if sol.max_nubes_pct is not None and sol.propiedad_nubes:
         col = col.filter(ee.Filter.lt(sol.propiedad_nubes, sol.max_nubes_pct))
     if sol.mascara_nubes:
         col = col.maskClouds()
     col = col.scaleAndOffset()
-    col = col.spectralIndices(list(sol.indices), **sol.params_indice)
+    return col.spectralIndices(list(sol.indices), **sol.params_indice)
+
+
+def _validar_reduccion(sol: SolicitudEjecucion) -> None:
+    if sol.reduccion not in _REDUCTORES:
+        raise ValueError(f"Reducción no soportada: {sol.reduccion!r} (opciones: {list(_REDUCTORES)})")
+
+
+def construir_imagen(sol: SolicitudEjecucion) -> ee.Image:
+    """Pipeline [decisión #9]: mask → scale → index (por imagen) → reduce → select → clip."""
+    _validar_reduccion(sol)
+    col = construir_coleccion(sol)
     imagen = _REDUCTORES[sol.reduccion](col).select(list(sol.indices))
     return imagen.clip(sol.aoi)
+
+
+def serie_periodo(col: "ee.ImageCollection", sol: SolicitudEjecucion, ini: str,
+                  fin: str) -> tuple[int, dict[str, float | None]]:
+    """Un período de la serie temporal (F8) sobre la colección de `construir_coleccion`:
+    filtra `[ini, fin)`, compone con `sol.reduccion` y promedia cada índice sobre el AOI.
+    `size` y medias se resuelven en UN solo `getInfo`. Sin imágenes no reduce
+    (`ee.Algorithms.If` server-side) y las medias son None; una clave ausente en
+    `reduceRegion` (todo enmascarado) también es None."""
+    _validar_reduccion(sol)
+    sub = col.filterDate(ini, fin)
+    n = sub.size()
+    medias = _REDUCTORES[sol.reduccion](sub).select(list(sol.indices)).reduceRegion(
+        reducer=ee.Reducer.mean(), geometry=sol.aoi, scale=sol.scale, maxPixels=1e9)
+    res = ee.Dictionary({"n": n, "medias": ee.Algorithms.If(n.gt(0), medias, ee.Dictionary({}))}
+                        ).getInfo()
+    n_imagenes = int(res.get("n") or 0)
+    valores = res.get("medias") or {}
+    return n_imagenes, {i: (valores.get(i) if n_imagenes else None) for i in sol.indices}
 
 
 def contar_imagenes(sol: SolicitudEjecucion, umbral: int) -> tuple[int, int | None]:

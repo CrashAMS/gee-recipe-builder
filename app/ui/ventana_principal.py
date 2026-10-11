@@ -13,20 +13,22 @@ from PySide6.QtCore import Qt, QThreadPool, QTimer
 
 from app.dominio.compilador import dialecto_js, dialecto_python
 from app import recientes
-from app.dominio.errores import RecetaJSONInvalida
+from app.dominio.errores import DemasiadosPeriodos, RecetaJSONInvalida
+from app.dominio.periodos import periodos
 from app.dominio import catalogo
-from app.dominio.receta import Salida, nombre_bandas
+from app.dominio.receta import Producto, Salida, nombre_bandas
 from app.dominio.receta_json import a_json, desde_json
 from app.gee import config
 from app.mapa.preview import PALETAS, paleta_por_dominio, vis_para_leyenda
 from app.mapa.widget_mapa import QtWebEngineNoDisponible, WidgetMapa
 from app.ui.dialogos.dialogo_export import DialogoExportDrive
+from app.ui.dialogos.dialogo_serie import DialogoSerie
 from app.ui.gestor_exports import GestorExports
 from app.ui.panel_exports import PanelExports
 from app.ui.panel_formulario import PanelFormulario
 from app.ui.visor_script import VisorScript
 from app.ui.workers import (
-    WorkerConstruirImagenExport, WorkerConteo, WorkerDescarga, WorkerPreview,
+    WorkerConstruirImagenExport, WorkerConteo, WorkerDescarga, WorkerPreview, WorkerSerieTemporal,
 )
 
 # Debounce del auto-refresh de preview al cambiar la receta (decisión #6 F3b):
@@ -45,6 +47,9 @@ class VentanaPrincipal(QMainWindow):
         # ofrece desde el aviso de límite (DEC-2 de F0) o se elige del combo.
         self._receta_en_curso: object | None = None
         self._receta_export_en_curso: object | None = None
+        # Serie temporal (F8): un worker cancelable a la vez + su diálogo no modal.
+        self._worker_serie: WorkerSerieTemporal | None = None
+        self._dialogo_serie: DialogoSerie | None = None
 
         # --- Zona formulario (con scroll) ---
         self.form = PanelFormulario()
@@ -321,6 +326,15 @@ class VentanaPrincipal(QMainWindow):
                 return
             config.guardar_project(pid.strip())
 
+        # Ruteo por producto (F8): la serie no usa `salida`; la tabla llega en F9.
+        if receta.producto is Producto.SERIE_TEMPORAL:
+            self._lanzar_serie(receta)
+            return
+        if receta.producto is Producto.TABLA_POLIGONOS:
+            QMessageBox.information(self, "Tabla por polígono",
+                                    "La tabla por polígono estará disponible en una fase futura.")
+            return
+
         if receta.salida is Salida.DRIVE:
             # Camino directo (F4): el usuario eligió "Drive / Cloud" en el combo.
             self._lanzar_construccion_export(receta)
@@ -367,6 +381,45 @@ class VentanaPrincipal(QMainWindow):
     def _on_fin(self) -> None:
         self.btn_ejecutar.setEnabled(True)
         self.btn_ejecutar.setText("Ejecutalo por mí (descarga a disco)")
+
+    # ---- serie temporal (F8) ----
+    def _serie_en_curso(self) -> bool:
+        return self._worker_serie is not None and not self._worker_serie.ha_terminado()
+
+    def _lanzar_serie(self, receta) -> None:
+        """Valida los períodos en el hilo GUI (sin tocar GEE), abre el diálogo y lanza el worker."""
+        if self._serie_en_curso():
+            QMessageBox.information(self, "Serie en curso",
+                                    "Ya hay una serie calculándose: cancelala o esperá a que termine.")
+            if self._dialogo_serie is not None:
+                self._dialogo_serie.show()
+                self._dialogo_serie.raise_()
+            return
+        try:
+            lista = periodos(receta.fecha_inicio, receta.fecha_fin, receta.periodo)
+        except DemasiadosPeriodos as e:
+            QMessageBox.warning(self, "Demasiados períodos", str(e))
+            return
+        except ValueError as e:
+            QMessageBox.warning(self, "Rango de fechas inválido", str(e))
+            return
+        if self._dialogo_serie is not None:
+            self._dialogo_serie.close()
+            self._dialogo_serie.deleteLater()
+        nombre = (f"serie_{nombre_bandas(receta.indices)}_{receta.periodo}_"
+                  f"{receta.fecha_inicio}_{receta.fecha_fin}.csv")
+        dlg = DialogoSerie(receta.indices, len(lista), sugerencia_csv=nombre, parent=self)
+        worker = WorkerSerieTemporal(receta)
+        s = worker.senales
+        s.progreso.connect(dlg.on_progreso)
+        s.terminado.connect(dlg.on_terminado)
+        s.cancelado.connect(dlg.on_cancelado)
+        s.error.connect(dlg.on_error)
+        s.finalizado.connect(dlg.on_finalizado)
+        dlg.cancelacion_pedida.connect(worker.solicitar_cancelacion)
+        self._dialogo_serie, self._worker_serie = dlg, worker
+        dlg.show()
+        self.pool.start(worker)
 
     # ---- camino Drive/Cloud (F4) ----
     def _lanzar_construccion_export(self, receta) -> None:
@@ -516,6 +569,8 @@ class VentanaPrincipal(QMainWindow):
     def closeEvent(self, event) -> None:
         # Solo corta el polling local: los tasks siguen en GEE y se retoman al reabrir.
         self.gestor_exports.detener_todo()
+        if self._serie_en_curso():
+            self._worker_serie.solicitar_cancelacion()   # corta antes del próximo período
         self._mapa.close()  # detiene el ServidorMapa (widget no top-level: close() igual dispara closeEvent)
         super().closeEvent(event)
 

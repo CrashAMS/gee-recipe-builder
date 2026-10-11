@@ -168,10 +168,75 @@ def test_multi_preview_muestra_solo_el_primer_indice():
 
 
 @pytest.mark.parametrize("dialecto", [dialecto_js, dialecto_python], ids=["js", "py"])
-@pytest.mark.parametrize("kw", [dict(producto="serie_temporal", periodo="mensual"),
-                                dict(producto="tabla_poligonos")],
-                         ids=["serie_temporal", "tabla_poligonos"])
+@pytest.mark.parametrize("kw", [dict(producto="tabla_poligonos")], ids=["tabla_poligonos"])
 def test_producto_no_imagen_no_compila(dialecto, kw):
     from app.dominio.errores import ProductoNoSoportado
     with pytest.raises(ProductoNoSoportado):
         dialecto.compilar(_receta(**kw))
+
+
+# --- F8: serie temporal (períodos literales del generador, sin reductor+clip+salida) ---
+
+SERIE_MENSUAL = dict(producto="serie_temporal", periodo="mensual",
+                     fecha_inicio="2023-01-01", fecha_fin="2023-04-01")
+SERIE_ANUAL = dict(producto="serie_temporal", periodo="anual", indices=["NDVI", "EVI"],
+                   composicion=Composicion.MEDIA, fecha_inicio="2021-06-01",
+                   fecha_fin="2023-03-01", max_nubes_pct=30)
+
+
+def test_golden_ndvi_s2_serie_mensual():
+    r = _receta(**SERIE_MENSUAL)
+    check_golden("ndvi_s2_serie_mensual.js", dialecto_js.compilar(r))
+    check_golden("ndvi_s2_serie_mensual.py", dialecto_python.compilar(r))
+
+
+def test_golden_ndvi_evi_s2_serie_anual():
+    r = _receta(**SERIE_ANUAL)
+    check_golden("ndvi_evi_s2_serie_anual.js", dialecto_js.compilar(r))
+    check_golden("ndvi_evi_s2_serie_anual.py", dialecto_python.compilar(r))
+
+
+@pytest.mark.parametrize("kw", [SERIE_MENSUAL, SERIE_ANUAL], ids=["mensual", "anual"])
+def test_serie_periodos_literales_iguales_al_generador(kw):
+    import ast
+    import re
+    from app.dominio.periodos import periodos
+    r = _receta(**kw)
+    esperado = periodos(r.fecha_inicio, r.fecha_fin, r.periodo)
+    py = dialecto_python.compilar(r)
+    bloque = py[py.index("periodos = ["):py.index("]", py.index("periodos = [")) + 1]
+    assert ast.literal_eval(bloque.split("=", 1)[1].strip()) == esperado
+    js = dialecto_js.compilar(r)
+    assert re.findall(r"\['(\d{4}-\d\d-\d\d)', '(\d{4}-\d\d-\d\d)'\]", js) == esperado
+
+
+@pytest.mark.parametrize("dialecto", [dialecto_js, dialecto_python], ids=["js", "py"])
+def test_serie_reemplaza_reductor_clip_y_salida(dialecto):
+    s = dialecto.compilar(_receta(**SERIE_MENSUAL))
+    assert ".clip(aoi)" not in s and "getDownloadURL" not in s and "Export." not in s
+    assert "NDVI_mean" in s and "n_imagenes" in s and "periodo_inicio" in s
+
+
+def test_serie_prefijo_identico_al_de_imagen():
+    """Colección, nubes, máscara, escala e índices: mismo texto que la receta imagen."""
+    for d, corte in ((dialecto_js, "var periodos"), (dialecto_python, "periodos = [")):
+        kw = dict(SERIE_ANUAL)
+        img = d.compilar(_receta(**{k: v for k, v in kw.items() if k not in ("producto", "periodo")}))
+        serie = d.compilar(_receta(**kw))
+        prefijo = serie[:serie.index(corte)]
+        assert img.startswith(prefijo)
+
+
+@pytest.mark.parametrize("dialecto", [dialecto_js, dialecto_python], ids=["js", "py"])
+def test_serie_mas_de_60_periodos_levanta(dialecto):
+    from app.dominio.errores import DemasiadosPeriodos
+    with pytest.raises(DemasiadosPeriodos):
+        dialecto.compilar(_receta(producto="serie_temporal", periodo="16_dias",
+                                  fecha_inicio="2020-01-01", fecha_fin="2023-01-01"))
+
+
+def test_js_str_escapa():
+    from app.dominio.compilador.base import js_str
+    assert js_str("a'b") == r"'a\'b'"
+    assert js_str("c\\d") == r"'c\\d'"
+    assert js_str("x\ny") == r"'x\ny'"

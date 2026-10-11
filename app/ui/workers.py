@@ -8,7 +8,9 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 
 from app.dominio import catalogo
-from app.dominio.errores import FiltroNubesNoDisponible
+from app.dominio.errores import DominioError, FiltroNubesNoDisponible
+from app.dominio.periodos import periodos
+from app.dominio.serie_csv import FilaSerie
 from app.dominio.receta import Receta
 from app.gee import auth, config, ejecutor
 from app.gee.auth import ErrorAuthGEE
@@ -333,3 +335,65 @@ class PollerTask(QRunnable):
         finally:
             self._terminado.set()
             self.senales.finalizado.emit(self.clave)
+
+
+class SenalesSerie(QObject):
+    """Señales de la serie temporal (F8). Conectarlas a un QObject del hilo Qt (DialogoSerie)."""
+    progreso = Signal(int, int, object)   # (i 1-based, total, FilaSerie del período i)
+    terminado = Signal(object)            # list[FilaSerie] completa
+    cancelado = Signal(object)            # list[FilaSerie] recibidas antes de cancelar
+    error = Signal(str, str)              # (tipo, mensaje_accionable)
+    finalizado = Signal()                 # SIEMPRE, sea cual sea el desenlace
+
+
+class WorkerSerieTemporal(QRunnable):
+    """Serie temporal de la receta (F8): un `getInfo` por período, secuencial y cancelable
+    entre períodos (patrón `PollerTask`: `threading.Event`, `setAutoDelete(False)`).
+    Orden: `periodos(...)` primero (`DemasiadosPeriodos` sale por `error` sin tocar GEE),
+    sesión bajo `_LOCK_SESION`, `construir_coleccion` una vez y `serie_periodo` por período."""
+
+    def __init__(self, receta: Receta, project_id: str | None = None) -> None:
+        super().__init__()
+        self.setAutoDelete(False)   # la ventana retiene la referencia hasta `finalizado`
+        self.receta = receta
+        self.project_id = project_id
+        self._cancelar = threading.Event()
+        self._terminado = threading.Event()
+        self.senales = SenalesSerie()
+
+    def solicitar_cancelacion(self) -> None:
+        """Corta antes del próximo período (el `getInfo` en vuelo termina igual)."""
+        self._cancelar.set()
+
+    def ha_terminado(self) -> bool:
+        return self._terminado.is_set()
+
+    @Slot()
+    def run(self) -> None:
+        filas: list[FilaSerie] = []
+        try:
+            r = self.receta
+            lista = periodos(r.fecha_inicio, r.fecha_fin, r.periodo)
+            with _LOCK_SESION:
+                auth.asegurar_sesion(self.project_id)
+            sol = solicitud_desde_receta(r)
+            col = ejecutor.construir_coleccion(sol)
+            total = len(lista)
+            for i, (ini, fin) in enumerate(lista, start=1):
+                if self._cancelar.is_set():
+                    self.senales.cancelado.emit(list(filas))
+                    return
+                n, medias = ejecutor.serie_periodo(col, sol, ini, fin)
+                fila = FilaSerie(ini, fin, n, medias)
+                filas.append(fila)
+                self.senales.progreso.emit(i, total, fila)
+            self.senales.terminado.emit(list(filas))
+        except ErrorAuthGEE as e:
+            self.senales.error.emit("auth", str(e))
+        except (DominioError, ValueError, ErrorEjecucionGEE) as e:
+            self.senales.error.emit(type(e).__name__, str(e))
+        except Exception as e:  # noqa: BLE001 — todo fallo vuelve a la UI
+            self.senales.error.emit("inesperado", str(e))
+        finally:
+            self._terminado.set()
+            self.senales.finalizado.emit()

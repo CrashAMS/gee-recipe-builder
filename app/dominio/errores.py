@@ -31,3 +31,13 @@ class FiltroNubesNoDisponible(DominioError):
 
 class IndiceIncompatible(DominioError):
     """El índice no tiene ningún sensor compatible en el catálogo."""
+
+
+class DemasiadosPeriodos(DominioError):
+    """La serie temporal pide más períodos que el tope (60): se levanta antes de tocar GEE."""
+
+    def __init__(self, n: int, tope: int):
+        self.n, self.tope = n, tope
+        super().__init__(
+            f"El rango genera {n} períodos y el máximo es {tope}: "
+            "elegí un período más largo o acortá el rango de fechas.")

@@ -237,8 +237,9 @@ _DEFS_ESCALA: dict[str, str] = {
 
 # Imports del render sobre el plan neutral (F6a): debajo de la zona congelada a propósito.
 from app.dominio.compilador.plan import (  # noqa: E402
-    PlanCompilacion, Segmento, TipoPaso, construir_plan, exigir_producto_imagen, unir,
+    PlanCompilacion, Segmento, Serie, TipoPaso, construir_plan, exigir_producto_compilable, unir,
     verificar_tipos)
+from app.dominio.compilador.base import js_str  # noqa: E402
 
 
 def _params_banda_js(coleccion: str, indices: tuple[str, ...],
@@ -255,7 +256,7 @@ def _params_banda_js(coleccion: str, indices: tuple[str, ...],
 # Tipos que este renderer sabe emitir (lista explícita: un TipoPaso nuevo falla ruidoso).
 _RENDERIZA = frozenset({
     TipoPaso.FUENTE, TipoPaso.FILTRO_FECHAS, TipoPaso.FILTRO_NUBES, TipoPaso.MASCARA,
-    TipoPaso.ESCALA, TipoPaso.INDICES, TipoPaso.REDUCTOR, TipoPaso.SALIDA})
+    TipoPaso.ESCALA, TipoPaso.INDICES, TipoPaso.REDUCTOR, TipoPaso.SALIDA, TipoPaso.SERIE})
 
 
 def _banda(bandas: tuple[str, ...]) -> str:
@@ -276,6 +277,37 @@ def _cola_salida(plan: PlanCompilacion) -> list[str]:
                 f"scale: {s.escala_m}, description: '{s.descripcion}'}});"]
     # Preview muestra solo el primer índice (F7 decide qué banda previsualizar).
     return [f"Map.addLayer({_banda(s.bandas[:1])}, {{}}, '{s.bandas[0]}');", "Map.centerObject(aoi);"]
+
+
+def _serie(s: Serie) -> list[str]:
+    """Serie temporal (F8): períodos literales del generador -> FeatureCollection con las
+    columnas del CSV de la app, impresa y graficada (`ui.Chart.feature.byFeature`)."""
+    lineas = ["var periodos = ["]
+    lineas += [f"  [{js_str(ini)}, {js_str(fin)}]," for ini, fin in s.periodos]
+    lineas[-1] = lineas[-1].rstrip(",")
+    bandas = "[" + ", ".join(js_str(i) for i in s.indices) + "]"
+    lineas += [
+        "];",
+        "var serie = ee.FeatureCollection(periodos.map(function(p){",
+        "  var sub = col.filterDate(p[0], p[1]);",
+        "  var n = sub.size();",
+        f"  var medias = ee.Dictionary(ee.Algorithms.If(n.gt(0), sub.{reductor(s.reductor)}"
+        f".select({bandas}).reduceRegion({{",
+        f"    reducer: ee.Reducer.mean(), geometry: aoi, scale: {s.escala_m}, maxPixels: 1e9}}), {{}}));",
+        "  var props = {periodo_inicio: p[0], periodo_fin: p[1]};",
+    ]
+    for i in s.indices:
+        lineas.append(f"  props[{js_str(i + '_mean')}] = ee.Algorithms.If("
+                      f"medias.contains({js_str(i)}), medias.get({js_str(i)}), null);")
+    columnas = "[" + ", ".join(js_str(i + "_mean") for i in s.indices) + "]"
+    lineas += [
+        "  props.n_imagenes = n;",
+        "  return ee.Feature(null, props);",
+        "}));",
+        "print(serie);",
+        f"print(ui.Chart.feature.byFeature(serie, 'periodo_inicio', {columnas}));",
+    ]
+    return lineas
 
 
 def segmentos(plan: PlanCompilacion) -> list[Segmento]:
@@ -327,6 +359,10 @@ def segmentos(plan: PlanCompilacion) -> list[Segmento]:
                  ["col = col.map(function(img){",
                   f"  return spectral.computeIndex(img, [{nombres}], {params});",
                   "});"]))
+    serie = plan.paso(TipoPaso.SERIE)
+    if serie:
+        segs.append(((TipoPaso.SERIE,), _serie(serie)))
+        return segs
     segs.append(((TipoPaso.REDUCTOR,),
                  [f"var img = col.{reductor(plan.paso(TipoPaso.REDUCTOR).composicion)}.clip(aoi);"]))
     segs.append(((TipoPaso.SALIDA,), _cola_salida(plan)))
@@ -334,5 +370,5 @@ def segmentos(plan: PlanCompilacion) -> list[Segmento]:
 
 
 def compilar(r: Receta) -> str:
-    exigir_producto_imagen(r)
+    exigir_producto_compilable(r)
     return unir(segmentos(construir_plan(r)))

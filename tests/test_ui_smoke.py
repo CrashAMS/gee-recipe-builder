@@ -269,3 +269,80 @@ def test_lanzar_conteo_incrementa_token_y_arma_worker(ventana):
     assert ventana._gen_conteo == g0 + 2
     assert [w.generacion for w in ventana.pool.iniciados] == [g0 + 1, g0 + 2]
     assert ventana.form.lbl_conteo.text().startswith("Contando escenas")
+
+
+# ---- F8: producto serie temporal ----
+
+def _modo_serie(ventana, periodo="mensual", ini=(2023, 1, 1), fin=(2023, 4, 1)):
+    from PySide6.QtCore import QDate
+    from app.dominio.receta import Producto
+    f = ventana.form
+    _bbox_valido(ventana)
+    _elegir_sensor(ventana, "COPERNICUS/S2")
+    f.fecha_inicio.setDate(QDate(*ini))
+    f.fecha_fin.setDate(QDate(*fin))
+    f.combo_producto.setCurrentIndex(f.combo_producto.findData(Producto.SERIE_TEMPORAL))
+    f.combo_periodo.setCurrentIndex(f.combo_periodo.findData(periodo))
+
+
+def test_combo_periodo_solo_con_serie_y_salida_deshabilitada(ventana):
+    from app.dominio.receta import PERIODOS, Producto
+    f = ventana.form
+    assert [f.combo_periodo.itemData(i) for i in range(f.combo_periodo.count())] == list(PERIODOS)
+    assert f.combo_periodo.isHidden() and f.combo_salida.isEnabled()
+    _modo_serie(ventana, "anual")
+    assert not f.combo_periodo.isHidden() and not f.combo_salida.isEnabled()
+    r = f.receta_actual()
+    assert r.producto is Producto.SERIE_TEMPORAL and r.periodo == "anual"
+    f.combo_producto.setCurrentIndex(f.combo_producto.findData(Producto.IMAGEN))
+    assert f.combo_periodo.isHidden() and f.combo_salida.isEnabled()
+    assert f.receta_actual().periodo is None
+
+
+def test_ejecutar_con_serie_lanza_worker_y_abre_dialogo(ventana, monkeypatch):
+    lanzados = []
+    monkeypatch.setattr(ventana.pool, "start", lambda w: lanzados.append(w))
+    _modo_serie(ventana)
+    ventana._ejecutar()
+    assert len(lanzados) == 1 and isinstance(lanzados[0], workers.WorkerSerieTemporal)
+    assert ventana._dialogo_serie is not None and ventana._dialogo_serie.total == 3
+    assert ventana._dialogo_serie.isVisible()
+
+
+def test_ejecutar_serie_con_mas_de_60_periodos_avisa_sin_lanzar(ventana, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    avisos, lanzados = [], []
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: avisos.append(a[2])))
+    monkeypatch.setattr(ventana.pool, "start", lambda w: lanzados.append(w))
+    _modo_serie(ventana, "16_dias", ini=(2020, 1, 1), fin=(2023, 1, 1))
+    ventana._ejecutar()
+    assert lanzados == [] and len(avisos) == 1 and "60" in avisos[0]
+    assert ventana._dialogo_serie is None
+
+
+def test_close_event_cancela_serie_en_curso(ventana, monkeypatch):
+    monkeypatch.setattr(ventana.pool, "start", lambda w: None)
+    _modo_serie(ventana)
+    ventana._ejecutar()
+    w = ventana._worker_serie
+    ventana.close()
+    assert w._cancelar.is_set()
+
+
+def test_cargar_receta_restaura_producto_y_periodo_sin_aviso(ventana, qtbot):
+    from app.dominio.aoi import desde_bbox
+    from app.dominio.receta import Producto, Receta
+    from app.dominio.receta_json import RecetaCargada
+    r = Receta(sensor="COPERNICUS/S2_SR", indices=["NDVI"], geometria=desde_bbox(-59.0, -35.0, -58.0, -34.0),
+               fecha_inicio="2023-01-01", fecha_fin="2023-06-01", mascara_nubes=True,
+               composicion="mean", salida="descarga", escala=20,
+               producto="serie_temporal", periodo="16_dias")
+    cuenta = []
+    ventana.form.cambiado.connect(lambda: cuenta.append(1))
+    avisos = ventana.form.cargar_receta(RecetaCargada(r, {"tipo": "bbox", "oeste": -59.0, "sur": -35.0,
+                                                          "este": -58.0, "norte": -34.0}))
+    assert avisos == [] and len(cuenta) == 1
+    f = ventana.form
+    assert Producto(f.combo_producto.currentData()) is Producto.SERIE_TEMPORAL
+    assert f.combo_periodo.currentData() == "16_dias" and not f.combo_periodo.isHidden()
+    assert f.receta_actual() == r

@@ -87,6 +87,13 @@ def _sin_worker_conteo_real(monkeypatch, tmp_path):
 
     monkeypatch.setattr(ventana_principal, "WorkerPreview", WorkerPreviewInerte)
 
+    # F8: la serie temporal tampoco debe tocar GEE desde un test de ventana.
+    class WorkerSerieTemporalInerte(workers.WorkerSerieTemporal):
+        def run(self):
+            pass
+
+    monkeypatch.setattr(ventana_principal, "WorkerSerieTemporal", WorkerSerieTemporalInerte)
+
 
 @pytest.fixture
 def mapa_stub(monkeypatch):
