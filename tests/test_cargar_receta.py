@@ -23,12 +23,13 @@ def ventana(qtbot, mapa_stub, monkeypatch, tmp_path):
     v = VentanaPrincipal()
     qtbot.addWidget(v)
     v._debounce_preview.stop()
+    v._debounce_preview.timeout.disconnect()  # cargar_receta emite `cambiado`: sin preview real (GEE)
     v._debounce_conteo.timeout.disconnect()   # el conteo nunca dispara en tests (no toca GEE)
     return v
 
 
 def _bbox_receta(**kw):
-    base = dict(sensor="COPERNICUS/S2_SR", indice="NDVI",
+    base = dict(sensor="COPERNICUS/S2_SR", indices=["NDVI"],
                 geometria=desde_bbox(-59.0, -35.0, -58.0, -34.0),
                 fecha_inicio="2024-01-01", fecha_fin="2024-02-01", mascara_nubes=True,
                 composicion="mean", salida="preview", escala=20)
@@ -66,7 +67,7 @@ def test_indice_desconocido_levanta_y_form_intacto(ventana):
     antes = ventana.form.combo_indice.currentIndex()
     escala = ventana.form.spin_escala.value()
     with pytest.raises(ValueError):
-        ventana.form.cargar_receta(RecetaCargada(_bbox_receta(indice="NO_EXISTE"), BBOX))
+        ventana.form.cargar_receta(RecetaCargada(_bbox_receta(indices=["NO_EXISTE"]), BBOX))
     assert ventana.form.combo_indice.currentIndex() == antes
     assert ventana.form.spin_escala.value() == escala
 
@@ -92,7 +93,7 @@ def _indice_con(sensor):
 
 def test_landsat5_fechas_2005_se_carga_sin_clamp(ventana):
     sensor = "LANDSAT/LT05/C02/T1_L2"
-    r = _bbox_receta(sensor=sensor, indice=_indice_con(sensor),
+    r = _bbox_receta(sensor=sensor, indices=[_indice_con(sensor)],
                      fecha_inicio="2005-01-01", fecha_fin="2005-06-30", mascara_nubes=False)
     ventana.form.cargar_receta(RecetaCargada(r, BBOX))
     f = ventana.form
@@ -103,7 +104,7 @@ def test_landsat5_fechas_2005_se_carga_sin_clamp(ventana):
 
 def test_cambiar_sensor_tras_cargar_no_pisa_la_escala(ventana):
     sensor = "LANDSAT/LT05/C02/T1_L2"
-    r = _bbox_receta(sensor=sensor, indice=_indice_con(sensor), escala=77,
+    r = _bbox_receta(sensor=sensor, indices=[_indice_con(sensor)], escala=77,
                      fecha_inicio="2005-01-01", fecha_fin="2005-06-30", mascara_nubes=False)
     f = ventana.form
     f.cargar_receta(RecetaCargada(r, BBOX))
@@ -149,3 +150,37 @@ def test_cargar_receta_sin_max_nubes_destilda(ventana):
     ventana.form.cargar_receta(RecetaCargada(_bbox_receta(), BBOX))
     assert not ventana.form.chk_nubes.isChecked()
     assert ventana.form.receta_actual().max_nubes_pct is None
+
+
+# --- F6b: form mono-índice ante recetas multi-índice / producto ---
+
+def test_receta_con_dos_indices_carga_el_primero_y_avisa(ventana):
+    r = _bbox_receta(indices=["NDVI", "EVI"])
+    avisos = ventana.form.cargar_receta(RecetaCargada(r, BBOX))
+    assert ventana.form.receta_actual().indices == ["NDVI"]
+    assert any("2 índices" in a and "NDVI" in a for a in avisos)
+
+
+def test_receta_con_segundo_indice_desconocido_levanta(ventana):
+    with pytest.raises(ValueError, match="NO_EXISTE"):
+        ventana.form.cargar_receta(RecetaCargada(_bbox_receta(indices=["NDVI", "NO_EXISTE"]), BBOX))
+
+
+def test_producto_no_imagen_avisa_y_queda_como_imagen(ventana):
+    r = _bbox_receta(producto="serie_temporal", periodo="mensual")
+    avisos = ventana.form.cargar_receta(RecetaCargada(r, BBOX))
+    assert any("serie_temporal" in a for a in avisos)
+    assert ventana.form.receta_actual().producto.value == "imagen"
+
+
+def test_estimacion_usa_n_bandas_igual_a_cantidad_de_indices(ventana, monkeypatch):
+    from app.ui import panel_formulario
+    llamadas = []
+    real = panel_formulario.estimar_tamano_descarga
+
+    def espia(*a, **k):
+        llamadas.append(k["n_bandas"])
+        return real(*a, **k)
+    monkeypatch.setattr(panel_formulario, "estimar_tamano_descarga", espia)
+    ventana.form.actualizar_estimacion(_bbox_receta(indices=["NDVI", "EVI", "NDWI"]))
+    assert llamadas == [3]

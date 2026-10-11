@@ -13,7 +13,7 @@ from app.dominio import catalogo
 from app.dominio.aoi import FuenteAOI, bbox_de
 from app.dominio.estimador import estimar_tamano_descarga, texto_estimacion
 from app.dominio.errores import FuenteAOIError
-from app.dominio.receta import Receta, Salida
+from app.dominio.receta import Producto, Receta, Salida
 from app.ui.widget_parametros import PanelParametros
 from app.ui.widget_aoi import SelectorAOI
 
@@ -282,7 +282,7 @@ class PanelFormulario(QWidget):
             return
         try:
             est = estimar_tamano_descarga(bbox_de(receta.geometria), receta.escala,
-                                          n_bandas=1, dtype="float32")
+                                          n_bandas=len(receta.indices), dtype="float32")
         except Exception:  # noqa: BLE001 — geometría vacía/inválida: etiqueta vacía, nunca levanta
             self.lbl_estimacion.setText("")
             return
@@ -308,7 +308,7 @@ class PanelFormulario(QWidget):
             self._error_aoi = str(e)
             return None
         return Receta(
-            indice=ind.short_name,                                # string, no el objeto Indice
+            indices=[ind.short_name],                             # strings, no objetos Indice (mono-índice hasta F7)
             sensor=sen.collection_id,                             # string, no el objeto Sensor
             geometria=geometria,                                   # GeoJSON dict (F1) — campo `geometria`, no `aoi`
             fecha_inicio=self.fecha_inicio.date().toString("yyyy-MM-dd"),
@@ -325,20 +325,32 @@ class PanelFormulario(QWidget):
     def cargar_receta(self, cargada) -> list[str]:
         """Inverso de `receta_actual`: vuelca una `RecetaCargada` en los widgets y emite
         `cambiado` UNA vez al final. Devuelve avisos (AOI degradado, valores no aplicables).
-        Levanta ValueError (form intacto) si el índice/sensor no existen en el catálogo."""
+        Levanta ValueError (form intacto) si algún índice o el sensor no existen en el catálogo.
+        El form es mono-índice hasta F7: con varios índices carga el primero y avisa; con
+        producto distinto de imagen avisa y queda como imagen."""
         r = cargada.receta
-        if r.indice not in catalogo.cargar_catalogo():
-            raise ValueError(f"El índice '{r.indice}' no existe en el catálogo.")
+        cat = catalogo.cargar_catalogo()
+        desconocidos = [i for i in r.indices if i not in cat]
+        if desconocidos:
+            raise ValueError(f"Índice(s) que no existen en el catálogo: {', '.join(desconocidos)}.")
+        primero = r.indices[0]
         self._limpiar_filtro_indices()   # un filtro activo no debe ocultar el índice a cargar
         idx_ind = next((i for i in range(self.combo_indice.count())
-                        if self.combo_indice.itemData(i).short_name == r.indice), -1)
+                        if self.combo_indice.itemData(i).short_name == primero), -1)
         if idx_ind < 0:
-            raise ValueError(f"El índice '{r.indice}' no existe en el catálogo.")
+            raise ValueError(f"El índice '{primero}' no existe en el catálogo.")
         ids = [s.collection_id for s in catalogo.sensores_para(self.combo_indice.itemData(idx_ind))]
         if r.sensor not in ids:
-            raise ValueError(f"El sensor '{r.sensor}' no existe o no es compatible con {r.indice}.")
+            raise ValueError(f"El sensor '{r.sensor}' no existe o no es compatible con {primero}.")
 
         avisos: list[str] = []
+        if len(r.indices) > 1:
+            avisos.append(
+                f"La receta trae {len(r.indices)} índices ({', '.join(r.indices)}); el formulario "
+                f"todavía admite uno solo: se cargó {primero}. Si la volvés a guardar, se pierden los demás.")
+        if r.producto is not Producto.IMAGEN:
+            avisos.append(
+                f"El producto '{r.producto.value}' todavía no está disponible: se cargó como imagen.")
         self.blockSignals(True)      # _on_indice/_on_sensor/params emiten adentro
         try:
             self.combo_indice.blockSignals(True)

@@ -11,7 +11,7 @@ _AOI = {"type": "Polygon", "coordinates": [[[-58.5, -34.6], [-58.4, -34.6],
 
 
 def _receta(**kw):
-    base = dict(sensor="COPERNICUS/S2_SR_HARMONIZED", indice="NDVI", geometria=_AOI,
+    base = dict(sensor="COPERNICUS/S2_SR_HARMONIZED", indices=["NDVI"], geometria=_AOI,
                 fecha_inicio="2023-01-01", fecha_fin="2023-12-31", mascara_nubes=True,
                 composicion=Composicion.MEDIANA, salida=Salida.DESCARGA, escala=10)
     base.update(kw)
@@ -25,13 +25,13 @@ def test_golden_ndvi_s2_descarga():
 
 
 def test_golden_evi_s2_drive_con_params():
-    r = _receta(indice="EVI", salida=Salida.DRIVE, parametros={"g": 2.5, "L": 1.0})
+    r = _receta(indices=["EVI"], salida=Salida.DRIVE, parametros={"g": 2.5, "L": 1.0})
     check_golden("evi_s2_drive.py", dialecto_python.compilar(r))
     check_golden("evi_s2_drive.js", dialecto_js.compilar(r))
 
 
 def test_golden_kndvi_s2_preview():
-    r = _receta(indice="kNDVI", salida=Salida.PREVIEW, mascara_nubes=False)
+    r = _receta(indices=["kNDVI"], salida=Salida.PREVIEW, mascara_nubes=False)
     check_golden("kndvi_s2_preview.py", dialecto_python.compilar(r))
     check_golden("kndvi_s2_preview.js", dialecto_js.compilar(r))
 
@@ -43,7 +43,7 @@ def test_golden_sin_mascara():
 
 def test_js_mascara_no_disponible_levanta():
     # sensor sin snippet en MASCARA_JS + máscara pedida -> error explícito, no silencioso
-    r = _receta(sensor="MODIS/061/MCD43A4", indice="NDVI", mascara_nubes=True)
+    r = _receta(sensor="MODIS/061/MCD43A4", indices=["NDVI"], mascara_nubes=True)
     with pytest.raises(MascaraNoDisponibleJS):
         dialecto_js.compilar(r)
 
@@ -54,37 +54,37 @@ def test_js_mascara_no_disponible_levanta():
 def test_golden_ndvi_landsat_c1sr_l8():
     # LC08 C1 SR: máscara "L8" (pixel_qa bit5+bit3), sin escala (ee_extra no
     # tiene entrada de scale/offset para C1 SR -> scaleAndOffset() es no-op).
-    r = _receta(sensor="LANDSAT/LC08/C01/T1_SR", indice="NDVI")
+    r = _receta(sensor="LANDSAT/LC08/C01/T1_SR", indices=["NDVI"])
     check_golden("ndvi_l8c1sr_descarga.js", dialecto_js.compilar(r))
 
 
 def test_golden_ndvi_landsat_c1sr_l457():
     # LE07 C1 SR: máscara "L457" (bit5 AND bit7, OR bit3, + mask() propia).
-    r = _receta(sensor="LANDSAT/LE07/C01/T1_SR", indice="NDVI")
+    r = _receta(sensor="LANDSAT/LE07/C01/T1_SR", indices=["NDVI"])
     check_golden("ndvi_l7c1sr_descarga.js", dialecto_js.compilar(r))
 
 
 def test_golden_ndvi_landsat_c2_l2():
     # LC08 C2 L2: máscara QA_PIXEL bits 2/3/4 + escala SR_B*/ST_B10.
-    r = _receta(sensor="LANDSAT/LC08/C02/T1_L2", indice="NDVI")
+    r = _receta(sensor="LANDSAT/LC08/C02/T1_L2", indices=["NDVI"])
     check_golden("ndvi_l8c2l2_descarga.js", dialecto_js.compilar(r))
 
 
 def test_golden_ndvi_modis_ga():
     # MOD09GA: máscara "state_1km" + escala sur_refl_b*.
-    r = _receta(sensor="MODIS/061/MOD09GA", indice="NDVI")
+    r = _receta(sensor="MODIS/061/MOD09GA", indices=["NDVI"])
     check_golden("ndvi_modisga_descarga.js", dialecto_js.compilar(r))
 
 
 def test_golden_ndvi_modis_q1():
     # MOD09Q1: misma lógica de bits que GA pero banda "State".
-    r = _receta(sensor="MODIS/061/MOD09Q1", indice="NDVI")
+    r = _receta(sensor="MODIS/061/MOD09Q1", indices=["NDVI"])
     check_golden("ndvi_modisq1_descarga.js", dialecto_js.compilar(r))
 
 
 def test_golden_ndvi_modis_gq_sin_mascara():
     # MOD09GQ no soporta máscara (fuera de _CON_MASCARA) pero sí escala.
-    r = _receta(sensor="MODIS/061/MOD09GQ", indice="NDVI", mascara_nubes=False)
+    r = _receta(sensor="MODIS/061/MOD09GQ", indices=["NDVI"], mascara_nubes=False)
     check_golden("ndvi_modisgq_sinmascara.js", dialecto_js.compilar(r))
 
 
@@ -134,3 +134,44 @@ def test_modis_con_umbral_levanta_filtro_nubes_no_disponible(dialecto):
 def test_sin_umbral_no_aparece_filtro_de_nubes():
     for d in (dialecto_js, dialecto_python):
         assert "ee.Filter.lt" not in d.compilar(_receta())
+
+
+# --- F6b: multi-índice (un GeoTIFF multibanda) y producto ---
+
+_MULTI = dict(indices=["NDVI", "EVI", "NDWI"], parametros={"g": 2.6})
+
+
+def test_golden_multi_s2_descarga():
+    r = _receta(**_MULTI)
+    check_golden("multi_s2_descarga.js", dialecto_js.compilar(r))
+    check_golden("multi_s2_descarga.py", dialecto_python.compilar(r))
+
+
+def test_golden_multi_s2_drive():
+    r = _receta(salida=Salida.DRIVE, **_MULTI)
+    check_golden("multi_s2_drive.js", dialecto_js.compilar(r))
+    check_golden("multi_s2_drive.py", dialecto_python.compilar(r))
+
+
+def test_multi_select_lista_en_orden_y_description_compuesta():
+    r = _receta(salida=Salida.DRIVE, **_MULTI)
+    js, py = dialecto_js.compilar(r), dialecto_python.compilar(r)
+    assert "img.select(['NDVI', 'EVI', 'NDWI'])" in js and "description: 'NDVI-EVI-NDWI'" in js
+    assert "img.select(['NDVI', 'EVI', 'NDWI'])" in py and "description='NDVI-EVI-NDWI'" in py
+    assert "spectralIndices(['NDVI', 'EVI', 'NDWI'], g=2.6)" in py
+
+
+def test_multi_preview_muestra_solo_el_primer_indice():
+    r = _receta(salida=Salida.PREVIEW, **_MULTI)
+    assert "Map.addLayer(img.select('NDVI'), {}, 'NDVI');" in dialecto_js.compilar(r)
+    assert "img.select('NDVI').getMapId" in dialecto_python.compilar(r)
+
+
+@pytest.mark.parametrize("dialecto", [dialecto_js, dialecto_python], ids=["js", "py"])
+@pytest.mark.parametrize("kw", [dict(producto="serie_temporal", periodo="mensual"),
+                                dict(producto="tabla_poligonos")],
+                         ids=["serie_temporal", "tabla_poligonos"])
+def test_producto_no_imagen_no_compila(dialecto, kw):
+    from app.dominio.errores import ProductoNoSoportado
+    with pytest.raises(ProductoNoSoportado):
+        dialecto.compilar(_receta(**kw))

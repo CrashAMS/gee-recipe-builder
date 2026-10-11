@@ -9,7 +9,7 @@ GEOM = {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 
 
 
 def _receta(**kw):
-    base = dict(sensor="COPERNICUS/S2_SR", indice="NDVI", geometria=GEOM,
+    base = dict(sensor="COPERNICUS/S2_SR", indices=["NDVI"], geometria=GEOM,
                 fecha_inicio="2024-01-01", fecha_fin="2024-02-01", mascara_nubes=True,
                 composicion="median", salida="descarga", escala=20, parametros={"g": 2.5})
     base.update(kw)
@@ -78,8 +78,8 @@ def test_json_mal_formado():
 
 def test_campo_obligatorio_faltante_y_enum_invalido():
     d = json.loads(a_json(_receta()))
-    del d["receta"]["indice"]
-    with pytest.raises(RecetaJSONInvalida, match="indice"):
+    del d["receta"]["indices"]
+    with pytest.raises(RecetaJSONInvalida, match="indices"):
         desde_json(json.dumps(d))
     d = json.loads(a_json(_receta()))
     d["receta"]["salida"] = "nube"
@@ -103,5 +103,46 @@ def test_campo_extra_ignorado_y_escala_faltante_usa_default():
 def test_tipos_invalidos_son_receta_invalida(campo, valor):
     d = json.loads(a_json(_receta()))
     d["receta"][campo] = valor
+    with pytest.raises(RecetaJSONInvalida):
+        desde_json(json.dumps(d))
+
+
+# --- F6b: indices / producto / periodo y JSON legado ---
+
+def test_ida_y_vuelta_tres_indices_serie_mensual():
+    r = _receta(indices=["NDVI", "EVI", "NDWI"], producto="serie_temporal", periodo="mensual")
+    d = json.loads(a_json(r))
+    assert d["version"] == 1 and "indice" not in d["receta"]
+    assert d["receta"]["indices"] == ["NDVI", "EVI", "NDWI"]
+    assert d["receta"]["producto"] == "serie_temporal" and d["receta"]["periodo"] == "mensual"
+    assert desde_json(a_json(r)).receta == r
+
+
+def test_json_legado_con_indice_carga():
+    d = json.loads(a_json(_receta()))
+    del d["receta"]["indices"], d["receta"]["producto"], d["receta"]["periodo"]
+    d["receta"]["indice"] = "EVI"
+    r = desde_json(json.dumps(d)).receta
+    assert r.indices == ["EVI"] and r.producto.value == "imagen" and r.periodo is None
+
+
+def test_json_legado_coherente_con_indices_carga():
+    d = json.loads(a_json(_receta(indices=["NDVI", "EVI"])))
+    d["receta"]["indice"] = "NDVI"
+    assert desde_json(json.dumps(d)).receta.indices == ["NDVI", "EVI"]
+
+
+@pytest.mark.parametrize("mutar", [
+    lambda r: r.update(indice="EVI"),          # incoherente con indices=["NDVI"]
+    lambda r: r.update(indices=[]),
+    lambda r: r.update(indices="NDVI"),
+    lambda r: r.update(indices=["NDVI", 1]),
+    lambda r: r.update(producto=3),
+    lambda r: r.update(periodo=16),
+    lambda r: r.update(indices=["NDVI", "NDVI"]),
+], ids=["incoherente", "vacia", "no_lista", "no_str", "producto", "periodo", "duplicados"])
+def test_indices_producto_periodo_invalidos(mutar):
+    d = json.loads(a_json(_receta()))
+    mutar(d["receta"])
     with pytest.raises(RecetaJSONInvalida):
         desde_json(json.dumps(d))

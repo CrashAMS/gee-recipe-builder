@@ -21,6 +21,10 @@ class MascaraNoDisponibleJS(DominioError):
     """Se pidió máscara de nubes en JS para un sensor sin snippet JS."""
 
 
+class ProductoNoSoportado(DominioError):
+    """El producto de la receta (serie/tabla) todavía no compila a script (F8/F9)."""
+
+
 class FiltroNubesNoDisponible(DominioError):
     """Se pidió filtrar por % de nubes en un sensor sin propiedad de nubes (ej. MODIS)."""
 

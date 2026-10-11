@@ -3,6 +3,8 @@
 Nunca devuelve `ee.Geometry` (objeto de servidor) — eso rompería la pureza del
 dominio. Es exactamente lo que `ee.Geometry(dict)` consume aguas abajo en F2/F3b."""
 from __future__ import annotations
+import datetime as dt
+import math
 from pathlib import Path
 
 import geopandas as gpd
@@ -49,6 +51,63 @@ def desde_archivo(ruta: str | Path) -> dict:
     return mapping(unary_union(list(gdf.geometry)))
 
 
+def _valor_json(v):
+    """Valor de una property -> tipo JSON estándar: fechas a ISO, NaN/inf/NaT/pd.NA a
+    None, escalares numpy a nativos (vía `.item()`; datetime64 vía `pd.Timestamp`)."""
+    import numpy as np
+    import pandas as pd
+    if v is None:
+        return None
+    if isinstance(v, (list, tuple, dict, set)):
+        return str(v)
+    try:
+        if pd.isna(v):                                             # NaN, NaT, pd.NA
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(v, np.datetime64):
+        v = pd.Timestamp(v)
+    elif isinstance(v, np.generic):                                # numpy scalar
+        v = v.item()
+    if isinstance(v, float) and not math.isfinite(v):
+        return None
+    if isinstance(v, (dt.datetime, dt.date, dt.time)):             # incluye pandas.Timestamp
+        return v.isoformat()
+    if isinstance(v, (str, bool, int, float)):
+        return v
+    return str(v)
+
+
+def desde_archivo_features(ruta: str | Path) -> dict:
+    """Shapefile (.shp con sidecars, o .zip) -> FeatureCollection en EPSG:4326 que
+    conserva cada feature y sus properties (JSON-serializables), SIN disolver.
+    Sin tope de cantidad (el umbral local/Drive es de F9). Levanta FuenteAOIError
+    si el archivo no se lee, no tiene CRS, no tiene features o alguna geometría es nula."""
+    ruta = Path(ruta)
+    try:
+        if ruta.suffix == ".zip":
+            gdf = gpd.read_file(f"zip://{ruta}", engine="pyogrio")
+        else:
+            gdf = gpd.read_file(ruta, engine="pyogrio")
+    except Exception as exc:
+        raise FuenteAOIError(f"{ruta.name}: no se pudo leer el archivo ({exc})") from exc
+    if gdf.crs is None:
+        raise FuenteAOIError(f"{ruta.name}: falta CRS (¿shapefile sin .prj?); no se puede reproyectar")
+    if len(gdf) == 0:
+        raise FuenteAOIError(f"{ruta.name}: el archivo no tiene polígonos.")
+    nulas = [i for i, g in enumerate(gdf.geometry) if g is None or g.is_empty]
+    if nulas:
+        raise FuenteAOIError(
+            f"{ruta.name}: {len(nulas)} feature(s) sin geometría (filas {nulas[:5]}).")
+    gdf = gdf.to_crs(CRS_SALIDA)
+    # to_dict('records') conserva los nombres de columna tal cual (itertuples los renombra).
+    filas = gdf.drop(columns=gdf.geometry.name).to_dict("records")
+    features = [{"type": "Feature", "geometry": mapping(geom),
+                 "properties": {str(k): _valor_json(v) for k, v in fila.items()}}
+                for geom, fila in zip(gdf.geometry, filas)]
+    return {"type": "FeatureCollection", "features": features}
+
+
 def desde_descriptor(descriptor: dict) -> dict:
     """Punto de entrada único para consumidores que traen un AOI como *descriptor*
     en vez de llamar directo a una de las funciones de arriba (contrato compartido
@@ -83,5 +142,6 @@ class FuenteAOI:
     desde_bbox = staticmethod(desde_bbox)
     desde_geojson_dict = staticmethod(desde_geojson_dict)
     desde_archivo = staticmethod(desde_archivo)
+    desde_archivo_features = staticmethod(desde_archivo_features)
     desde_descriptor = staticmethod(desde_descriptor)
     bbox_de = staticmethod(bbox_de)

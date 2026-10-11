@@ -23,7 +23,7 @@ def _sol(collection_id: str, aoi) -> SolicitudEjecucion:
         aoi=aoi,
         fecha_inicio="2024-01-01",
         fecha_fin="2024-03-31",
-        indice="NDVI",
+        indices=["NDVI"],
         mascara_nubes=False,
         reduccion="median",
         scale=20,

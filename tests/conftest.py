@@ -28,6 +28,21 @@ def shp_valido(tmp_path):
 
 
 @pytest.fixture
+def shp_lotes(tmp_path):
+    """F6b: 3 lotes con properties (`lote` str, `fecha` date, `ha` float con un NaN), 4326.
+    Lo consumen desde_archivo_features y la tabla por polígono (F9)."""
+    import datetime as dt
+    p = tmp_path / "lotes.shp"
+    polis = [Polygon([(-58.5 + i * 0.01, -34.6), (-58.49 + i * 0.01, -34.6),
+                      (-58.49 + i * 0.01, -34.59), (-58.5 + i * 0.01, -34.59)]) for i in range(3)]
+    gpd.GeoDataFrame({"lote": ["L1", "L2", "L3"],
+                      "fecha": [dt.date(2024, 1, 15), dt.date(2024, 2, 1), dt.date(2024, 3, 10)],
+                      "ha": [12.5, float("nan"), 7.25]},
+                     geometry=polis, crs="EPSG:4326").to_file(p, engine="pyogrio")
+    return p
+
+
+@pytest.fixture
 def shp_sin_prj(tmp_path):
     p = tmp_path / "aoi_noprj.shp"
     gpd.GeoDataFrame(geometry=[Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])],

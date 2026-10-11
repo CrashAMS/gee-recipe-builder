@@ -32,9 +32,17 @@ def a_json(receta: Receta, descriptor_aoi: dict | None = None) -> str:
 
 
 def _validar_tipos(k: dict) -> None:
-    for nombre in ("sensor", "indice", "fecha_inicio", "fecha_fin", "composicion", "salida"):
+    for nombre in ("sensor", "fecha_inicio", "fecha_fin", "composicion", "salida"):
         if not isinstance(k[nombre], str):
             raise RecetaJSONInvalida(f"'{nombre}' debe ser texto (se recibió {k[nombre]!r}).")
+    ind = k["indices"]
+    if not isinstance(ind, list) or not ind or not all(isinstance(i, str) for i in ind):
+        raise RecetaJSONInvalida(
+            f"'indices' debe ser una lista no vacía de nombres de índice (se recibió {ind!r}).")
+    if "producto" in k and not isinstance(k["producto"], str):
+        raise RecetaJSONInvalida(f"'producto' debe ser texto (se recibió {k['producto']!r}).")
+    if "periodo" in k and k["periodo"] is not None and not isinstance(k["periodo"], str):
+        raise RecetaJSONInvalida(f"'periodo' debe ser texto o null (se recibió {k['periodo']!r}).")
     for nombre in ("fecha_inicio", "fecha_fin"):
         try:
             date.fromisoformat(k[nombre])
@@ -49,6 +57,24 @@ def _validar_tipos(k: dict) -> None:
         if not isinstance(p, dict) or not all(
                 isinstance(v, (int, float)) and not isinstance(v, bool) for v in p.values()):
             raise RecetaJSONInvalida("'parametros' debe ser un objeto nombre -> número.")
+
+
+def _traducir_indice_legado(datos: dict) -> dict:
+    """Recetas previas a F6b guardaban `"indice": "X"` → `indices=["X"]`. Si vienen las
+    dos claves, deben coincidir con el shim (`indices[0] == indice`)."""
+    if "indice" not in datos:
+        return datos
+    legado = datos["indice"]
+    if not isinstance(legado, str):
+        raise RecetaJSONInvalida(f"'indice' debe ser texto (se recibió {legado!r}).")
+    datos = {k: v for k, v in datos.items() if k != "indice"}
+    if "indices" not in datos:
+        datos["indices"] = [legado]
+    elif not (isinstance(datos["indices"], list) and datos["indices"][:1] == [legado]):
+        raise RecetaJSONInvalida(
+            f"'indice' ({legado!r}) e 'indices' ({datos['indices']!r}) no coinciden; "
+            "dejá solo 'indices'.")
+    return datos
 
 
 def desde_json(texto: str) -> RecetaCargada:
@@ -79,6 +105,7 @@ def desde_json(texto: str) -> RecetaCargada:
         raise RecetaJSONInvalida(
             "Falta la geometría de la receta ('geometria' debe ser un GeoJSON con 'type').")
 
+    datos = _traducir_indice_legado(datos)
     kwargs = {}
     for f in fields(Receta):
         if f.name in datos:

@@ -27,7 +27,7 @@ class SolicitudEjecucion:
     aoi: "ee.Geometry"
     fecha_inicio: str
     fecha_fin: str
-    indice: str
+    indices: list[str]                   # short_names ASI = bandas de salida, en orden
     mascara_nubes: bool
     reduccion: str
     scale: float
@@ -56,8 +56,8 @@ def construir_imagen(sol: SolicitudEjecucion) -> ee.Image:
     if sol.mascara_nubes:
         col = col.maskClouds()
     col = col.scaleAndOffset()
-    col = col.spectralIndices([sol.indice], **sol.params_indice)
-    imagen = _REDUCTORES[sol.reduccion](col).select(sol.indice)
+    col = col.spectralIndices(list(sol.indices), **sol.params_indice)
+    imagen = _REDUCTORES[sol.reduccion](col).select(list(sol.indices))
     return imagen.clip(sol.aoi)
 
 
@@ -80,12 +80,16 @@ def contar_imagenes(sol: SolicitudEjecucion, umbral: int) -> tuple[int, int | No
 imagen_indice = construir_imagen
 
 
-def verificar_banda_presente(imagen: ee.Image, banda: str) -> None:
-    """Convierte el fallo silencioso de eemont [HALLAZGO-2.3] en error ruidoso."""
+def verificar_banda_presente(imagen: ee.Image, bandas_esperadas: list[str]) -> None:
+    """Convierte el fallo silencioso de eemont [HALLAZGO-2.3] en error ruidoso.
+    Un solo `getInfo` para todas las bandas; el mensaje nombra todas las faltantes."""
     bandas = imagen.bandNames().getInfo()
-    if banda not in bandas:
+    faltantes = [b for b in bandas_esperadas if b not in bandas]
+    if faltantes:
+        nombres = ", ".join(f"'{b}'" for b in faltantes)
         raise BandaAusente(
-            f"El índice '{banda}' no está en la imagen (bandas presentes: {bandas}). "
+            f"{'El índice' if len(faltantes) == 1 else 'Los índices'} {nombres} no "
+            f"{'está' if len(faltantes) == 1 else 'están'} en la imagen (bandas presentes: {bandas}). "
             "Probable incompatibilidad índice+sensor que el pre-chequeo del catálogo debió filtrar."
         )
 
@@ -93,7 +97,7 @@ def verificar_banda_presente(imagen: ee.Image, banda: str) -> None:
 def ejecutar_a_disco(sol: SolicitudEjecucion, ruta_destino: str) -> str:
     """Corre la receta y baja el .tif. Pre-chequea tamaño (F1) y banda presente."""
     imagen = construir_imagen(sol)
-    verificar_banda_presente(imagen, sol.indice)  # [decisión #6]
+    verificar_banda_presente(imagen, sol.indices)  # [decisión #6]
 
     # Pre-chequeo proactivo de tamaño [decisión #4 / HALLAZGO-1.4].
     # estimador.estimar_tamano_descarga es dominio puro (F1) y NO acepta ee.Geometry:
@@ -103,7 +107,7 @@ def ejecutar_a_disco(sol: SolicitudEjecucion, ruta_destino: str) -> str:
     lats = [p[1] for p in coords]
     bbox_lonlat = (min(lons), min(lats), max(lons), max(lats))
     est = estimador.estimar_tamano_descarga(
-        bbox_lonlat=bbox_lonlat, escala_m=sol.scale, n_bandas=1, dtype="float32"
+        bbox_lonlat=bbox_lonlat, escala_m=sol.scale, n_bandas=len(sol.indices), dtype="float32"
     )
     if est.excede:
         raise DescargaExcedeLimite(

@@ -30,12 +30,12 @@ def test_sin_mascara_no_hay_paso_mascara_pero_si_escala():
 
 
 def test_indices_y_bandas_de_salida():
-    r = _receta(indice="EVI", parametros={"g": 2.5, "L": 1.0}, salida=DestinoSalida.DRIVE)
+    r = _receta(indices=["EVI"], parametros={"g": 2.5, "L": 1.0}, salida=DestinoSalida.DRIVE)
     plan = construir_plan(r)
     ind, sal = plan.paso(T.INDICES), plan.paso(T.SALIDA)
     assert ind == Indices(("EVI",), (("L", 1.0), ("g", 2.5)))
     assert sal == Salida(DestinoSalida.DRIVE, 10, ("EVI",), "EVI")
-    assert sal.bandas == ind.nombres == (r.indice,)
+    assert sal.bandas == ind.nombres == tuple(r.indices)
 
 
 def test_plan_hashable_e_igual_para_recetas_iguales():
@@ -44,11 +44,11 @@ def test_plan_hashable_e_igual_para_recetas_iguales():
     assert len({a, b, construir_plan(_receta())}) == 2
 
 
-# Las 12 recetas de los goldens actuales (tests/test_compilador.py).
+# Las recetas de los goldens actuales (tests/test_compilador.py).
 _RECETAS_GOLDEN = {
     "s2_descarga": dict(),
-    "s2_drive": dict(indice="EVI", salida=DestinoSalida.DRIVE, parametros={"g": 2.5, "L": 1.0}),
-    "s2_preview": dict(indice="kNDVI", salida=DestinoSalida.PREVIEW, mascara_nubes=False),
+    "s2_drive": dict(indices=["EVI"], salida=DestinoSalida.DRIVE, parametros={"g": 2.5, "L": 1.0}),
+    "s2_preview": dict(indices=["kNDVI"], salida=DestinoSalida.PREVIEW, mascara_nubes=False),
     "s2_sinmascara": dict(mascara_nubes=False),
     "s2_nubes": dict(max_nubes_pct=20),
     "l8c1sr": dict(sensor="LANDSAT/LC08/C01/T1_SR"),
@@ -58,6 +58,10 @@ _RECETAS_GOLDEN = {
     "modis_ga": dict(sensor="MODIS/061/MOD09GA"),
     "modis_q1": dict(sensor="MODIS/061/MOD09Q1"),
     "modis_gq_sinmascara": dict(sensor="MODIS/061/MOD09GQ", mascara_nubes=False),
+    # F6b: multi-índice (goldens multi_s2_*).
+    "multi_s2_descarga": dict(indices=["NDVI", "EVI", "NDWI"], parametros={"g": 2.6}),
+    "multi_s2_drive": dict(indices=["NDVI", "EVI", "NDWI"], parametros={"g": 2.6},
+                           salida=DestinoSalida.DRIVE),
 }
 
 
@@ -92,3 +96,10 @@ def test_receta_doblemente_invalida_levanta_filtro_nubes_en_js():
         dialecto_js.compilar(r)
     with pytest.raises(MascaraNoDisponibleJS):
         dialecto_js.compilar(_receta(sensor="MODIS/061/MCD43A4"))
+
+
+def test_plan_multi_indice_bandas_en_orden_y_descripcion_compuesta():
+    plan = construir_plan(_receta(indices=("NDVI", "EVI", "NDWI")))
+    assert plan.paso(T.INDICES).nombres == ("NDVI", "EVI", "NDWI")
+    sal = plan.paso(T.SALIDA)
+    assert sal.bandas == ("NDVI", "EVI", "NDWI") and sal.descripcion == "NDVI-EVI-NDWI"

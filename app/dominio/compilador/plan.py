@@ -18,9 +18,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import ClassVar, Iterable, Union
 
-from app.dominio.receta import Composicion, Receta
+from app.dominio.receta import Composicion, Producto, Receta, nombre_bandas
 from app.dominio.receta import Salida as DestinoSalida
 from app.dominio.compilador.base import prop_nubes_filtro
+from app.dominio.errores import ProductoNoSoportado
 
 
 class TipoPaso(str, Enum):
@@ -72,7 +73,7 @@ class Escala:
 @dataclass(frozen=True)
 class Indices:
     tipo_paso: ClassVar[TipoPaso] = TipoPaso.INDICES
-    nombres: tuple[str, ...]        # short_names ASI; hoy siempre (r.indice,)
+    nombres: tuple[str, ...]        # short_names ASI, en el orden de Receta.indices
     parametros: tuple[tuple[str, float], ...] = ()  # overrides globales, ordenados por clave
 
 
@@ -88,7 +89,7 @@ class Salida:
     tipo: DestinoSalida             # descarga / drive / preview
     escala_m: int                   # scale en metros
     bandas: tuple[str, ...]         # == Indices.nombres
-    descripcion: str                # nombre de la tarea / capa
+    descripcion: str                # nombre de la tarea / capa: nombre_bandas(indices)
 
 
 Paso = Union[Fuente, FiltroFechas, FiltroNubes, Mascara, Escala, Indices, Reductor, Salida]
@@ -114,7 +115,7 @@ def construir_plan(r: Receta) -> PlanCompilacion:
     Indices → Reductor → Salida. Levanta FiltroNubesNoDisponible (ver docstring
     del módulo)."""
     prop_nubes = prop_nubes_filtro(r)
-    nombres = (r.indice,)
+    nombres = tuple(r.indices)
     pasos: list[Paso] = [Fuente(r.sensor, copy.deepcopy(r.geometria)), FiltroFechas(r.fecha_inicio, r.fecha_fin)]
     if prop_nubes:
         pasos.append(FiltroNubes(prop_nubes, r.max_nubes_pct))
@@ -123,8 +124,22 @@ def construir_plan(r: Receta) -> PlanCompilacion:
     pasos += [Escala(r.sensor),
               Indices(nombres, tuple(sorted(r.parametros.items()))),
               Reductor(r.composicion),
-              Salida(r.salida, r.escala, nombres, r.indice)]
+              Salida(r.salida, r.escala, nombres, nombre_bandas(nombres))]
     return PlanCompilacion(tuple(pasos))
+
+
+def exigir_producto_imagen(r: Receta) -> None:
+    """Serie y tabla todavía no compilan a script (F8/F9): error explícito en `compilar`."""
+    if r.producto is not Producto.IMAGEN:
+        raise ProductoNoSoportado(
+            f"El producto '{r.producto.value}' todavía no genera script; solo 'imagen'.")
+
+
+def verificar_tipos(plan: PlanCompilacion, soportados: Iterable[TipoPaso]) -> None:
+    """Un renderer falla ruidoso ante un tipo de paso que no sabe renderizar."""
+    desconocidos = [t for t in plan.tipos if t not in set(soportados)]
+    if desconocidos:
+        raise NotImplementedError(f"Tipos de paso sin render: {[t.value for t in desconocidos]}")
 
 
 def tipos_renderizados(segmentos: Iterable[Segmento]) -> tuple[TipoPaso, ...]:

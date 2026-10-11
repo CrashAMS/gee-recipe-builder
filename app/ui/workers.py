@@ -34,7 +34,7 @@ def solicitud_desde_receta(receta: Receta) -> "ejecutor.SolicitudEjecucion":
         aoi=ee.Geometry(receta.geometria),      # F1 entrega GeoJSON dict, nunca ee.Geometry
         fecha_inicio=receta.fecha_inicio,
         fecha_fin=receta.fecha_fin,
-        indice=receta.indice,
+        indices=list(receta.indices),
         mascara_nubes=receta.mascara_nubes,
         reduccion=receta.composicion.value,     # enum de F1 → string que _REDUCTORES de F2 conoce
         scale=receta.escala,

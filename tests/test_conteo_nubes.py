@@ -60,7 +60,7 @@ def fake_ee(monkeypatch):
 
 def _sol(**kw):
     base = dict(collection_id="COPERNICUS/S2_SR_HARMONIZED", aoi="AOI", fecha_inicio="2024-01-01",
-                fecha_fin="2024-02-01", indice="NDVI", mascara_nubes=True, reduccion="median",
+                fecha_fin="2024-02-01", indices=["NDVI"], mascara_nubes=True, reduccion="median",
                 scale=20, propiedad_nubes="CLOUDY_PIXEL_PERCENTAGE", max_nubes_pct=20)
     base.update(kw)
     return SolicitudEjecucion(**base)
@@ -115,8 +115,55 @@ def test_worker_conteo_error_emite_error_y_finaliza(monkeypatch):
 def test_solicitud_modis_con_umbral_levanta():
     from app.dominio.errores import FiltroNubesNoDisponible
     from app.dominio.receta import Receta
-    r = Receta(sensor="MODIS/061/MOD09GA", indice="NDVI", geometria={"type": "Polygon", "coordinates": []},
+    r = Receta(sensor="MODIS/061/MOD09GA", indices=["NDVI"], geometria={"type": "Polygon", "coordinates": []},
                fecha_inicio="2024-01-01", fecha_fin="2024-02-01", mascara_nubes=False,
                composicion="median", salida="preview", max_nubes_pct=20)
     with pytest.raises(FiltroNubesNoDisponible):
         workers.solicitud_desde_receta(r)
+
+
+# --- F6b: multi-índice en el ejecutor y el adapter ---
+
+def test_construir_imagen_con_tres_indices_pasa_la_lista(fake_ee):
+    ejecutor.construir_imagen(_sol(indices=["NDVI", "EVI", "NDWI"]))
+    assert ("spectralIndices", (["NDVI", "EVI", "NDWI"],)) in fake_ee.log
+    assert ("select", (["NDVI", "EVI", "NDWI"],)) in fake_ee.log
+
+
+class _ImgFake:
+    def __init__(self, bandas):
+        self.bandas, self.llamadas = bandas, 0
+
+    def bandNames(self):
+        return self
+
+    def getInfo(self):
+        self.llamadas += 1
+        return self.bandas
+
+
+def test_verificar_banda_presente_multibanda_ok_con_un_getinfo():
+    img = _ImgFake(["NDVI", "EVI", "NDWI"])
+    ejecutor.verificar_banda_presente(img, ["NDVI", "EVI", "NDWI"])
+    assert img.llamadas == 1
+
+
+def test_verificar_banda_presente_nombra_las_faltantes():
+    img = _ImgFake(["NDVI"])
+    with pytest.raises(ejecutor.BandaAusente, match="'EVI', 'NDWI'") as e:
+        ejecutor.verificar_banda_presente(img, ["NDVI", "EVI", "NDWI"])
+    assert "'NDVI'," not in str(e.value).split("(bandas")[0]
+    assert img.llamadas == 1
+
+
+def test_solicitud_desde_receta_lleva_indices_y_no_mira_producto(monkeypatch):
+    import sys
+    import types
+    from app.dominio.receta import Receta
+    monkeypatch.setitem(sys.modules, "ee", types.SimpleNamespace(Geometry=lambda g: ("geom", g)))
+    r = Receta(sensor="COPERNICUS/S2_SR_HARMONIZED", indices=["NDVI", "EVI"],
+               geometria={"type": "Polygon", "coordinates": []}, fecha_inicio="2024-01-01",
+               fecha_fin="2024-02-01", mascara_nubes=False, composicion="median",
+               salida="descarga", producto="serie_temporal", periodo="mensual")
+    sol = workers.solicitud_desde_receta(r)
+    assert sol.indices == ["NDVI", "EVI"] and not hasattr(sol, "producto")

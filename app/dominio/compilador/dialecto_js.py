@@ -237,21 +237,32 @@ _DEFS_ESCALA: dict[str, str] = {
 
 # Imports del render sobre el plan neutral (F6a): debajo de la zona congelada a propósito.
 from app.dominio.compilador.plan import (  # noqa: E402
-    PlanCompilacion, Segmento, TipoPaso, construir_plan, unir)
+    PlanCompilacion, Segmento, TipoPaso, construir_plan, exigir_producto_imagen, unir,
+    verificar_tipos)
 
 
-def _params_banda_js(coleccion: str, indice: str, parametros: tuple[tuple[str, float], ...]) -> str:
+def _params_banda_js(coleccion: str, indices: tuple[str, ...],
+                     parametros: tuple[tuple[str, float], ...]) -> str:
+    """Mapa de bandas = unión ordenada de `bandas_requeridas` de todos los índices."""
     perfil = PERFILES[coleccion]
-    idx = cargar_catalogo()[indice]
-    pares = [f"{s!r}: img.select({perfil.bandas[s]!r})" for s in sorted(idx.bandas_requeridas)]
+    catalogo = cargar_catalogo()
+    simbolos = set().union(*(catalogo[i].bandas_requeridas for i in indices))
+    pares = [f"{s!r}: img.select({perfil.bandas[s]!r})" for s in sorted(simbolos)]
     pares += [f"{k!r}: {v}" for k, v in parametros]
     return "{" + ", ".join(pares) + "}"
 
 
+# Tipos que este renderer sabe emitir (lista explícita: un TipoPaso nuevo falla ruidoso).
+_RENDERIZA = frozenset({
+    TipoPaso.FUENTE, TipoPaso.FILTRO_FECHAS, TipoPaso.FILTRO_NUBES, TipoPaso.MASCARA,
+    TipoPaso.ESCALA, TipoPaso.INDICES, TipoPaso.REDUCTOR, TipoPaso.SALIDA})
+
+
 def _banda(bandas: tuple[str, ...]) -> str:
-    if len(bandas) != 1:
-        raise NotImplementedError("select multi-banda llega en F6b")
-    return f"img.select('{bandas[0]}')"
+    """Un índice -> select('X') (texto previo a F6b); varios -> select([...]) en orden."""
+    if len(bandas) == 1:
+        return f"img.select('{bandas[0]}')"
+    return "img.select([" + ", ".join(f"'{b}'" for b in bandas) + "])"
 
 
 def _cola_salida(plan: PlanCompilacion) -> list[str]:
@@ -263,12 +274,14 @@ def _cola_salida(plan: PlanCompilacion) -> list[str]:
     if s.tipo is Salida.DRIVE:
         return [f"Export.image.toDrive({{image: {banda}, region: aoi, "
                 f"scale: {s.escala_m}, description: '{s.descripcion}'}});"]
-    return [f"Map.addLayer({banda}, {{}}, '{s.descripcion}');", "Map.centerObject(aoi);"]
+    # Preview muestra solo el primer índice (F7 decide qué banda previsualizar).
+    return [f"Map.addLayer({_banda(s.bandas[:1])}, {{}}, '{s.bandas[0]}');", "Map.centerObject(aoi);"]
 
 
 def segmentos(plan: PlanCompilacion) -> list[Segmento]:
     """Render JS por segmentos. Levanta MascaraNoDisponibleJS al resolver `Mascara`
     (después de la validación neutral de `construir_plan`)."""
+    verificar_tipos(plan, _RENDERIZA)
     fuente = plan.paso(TipoPaso.FUENTE)
     fechas = plan.paso(TipoPaso.FILTRO_FECHAS)
     nubes = plan.paso(TipoPaso.FILTRO_NUBES)
@@ -309,9 +322,7 @@ def segmentos(plan: PlanCompilacion) -> list[Segmento]:
     # Escala sin función JS (ESCALA_JS[id] is None): el paso existe, sin texto.
     segs.append(((TipoPaso.ESCALA,), [f"col = col.map({fn_escala});"] if fn_escala else []))
     nombres = ", ".join(f"'{n}'" for n in indices.nombres)
-    if len(indices.nombres) != 1:
-        raise NotImplementedError("mapa de bandas multi-índice llega en F6b")
-    params = _params_banda_js(fuente.coleccion, indices.nombres[0], indices.parametros)
+    params = _params_banda_js(fuente.coleccion, indices.nombres, indices.parametros)
     segs.append(((TipoPaso.INDICES,),
                  ["col = col.map(function(img){",
                   f"  return spectral.computeIndex(img, [{nombres}], {params});",
@@ -323,4 +334,5 @@ def segmentos(plan: PlanCompilacion) -> list[Segmento]:
 
 
 def compilar(r: Receta) -> str:
+    exigir_producto_imagen(r)
     return unir(segmentos(construir_plan(r)))

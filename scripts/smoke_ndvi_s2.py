@@ -29,7 +29,7 @@ def main() -> None:
         aoi=aoi,
         fecha_inicio="2024-01-01",
         fecha_fin="2024-03-31",
-        indice="NDVI",
+        indices=["NDVI"],
         mascara_nubes=True,
         reduccion="median",
         scale=20,

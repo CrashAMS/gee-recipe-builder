@@ -3,17 +3,25 @@ from app.dominio.receta import Receta
 from app.dominio.receta import Salida as DestinoSalida
 from app.dominio.compilador.base import geojson_py, reductor
 from app.dominio.compilador.plan import (
-    PlanCompilacion, Segmento, TipoPaso, construir_plan, unir)
+    PlanCompilacion, Segmento, TipoPaso, construir_plan, exigir_producto_imagen, unir,
+    verificar_tipos)
 
 
 def _params_kwargs(parametros: tuple[tuple[str, float], ...]) -> str:
     return "".join(f", {k}={v}" for k, v in parametros)
 
 
+# Tipos que este renderer sabe emitir (lista explícita: un TipoPaso nuevo falla ruidoso).
+_RENDERIZA = frozenset({
+    TipoPaso.FUENTE, TipoPaso.FILTRO_FECHAS, TipoPaso.FILTRO_NUBES, TipoPaso.MASCARA,
+    TipoPaso.ESCALA, TipoPaso.INDICES, TipoPaso.REDUCTOR, TipoPaso.SALIDA})
+
+
 def _banda(bandas: tuple[str, ...]) -> str:
-    if len(bandas) != 1:
-        raise NotImplementedError("select multi-banda llega en F6b")
-    return f"img.select({bandas[0]!r})"
+    """Un índice -> select('X') (texto previo a F6b); varios -> select([...]) en orden."""
+    if len(bandas) == 1:
+        return f"img.select({bandas[0]!r})"
+    return f"img.select({list(bandas)!r})"
 
 
 def _cola_salida(plan: PlanCompilacion) -> list[str]:
@@ -27,10 +35,12 @@ def _cola_salida(plan: PlanCompilacion) -> list[str]:
         return [f"task = ee.batch.Export.image.toDrive("
                 f"image={banda}, region=aoi, scale={s.escala_m}, description={s.descripcion!r})",
                 "task.start()"]
-    return [f"# preview: {banda}.getMapId(vis_params) -> tile URL (lo consume F3b)"]
+    # Preview muestra solo el primer índice (F7 decide qué banda previsualizar).
+    return [f"# preview: {_banda(s.bandas[:1])}.getMapId(vis_params) -> tile URL (lo consume F3b)"]
 
 
 def segmentos(plan: PlanCompilacion) -> list[Segmento]:
+    verificar_tipos(plan, _RENDERIZA)
     fuente = plan.paso(TipoPaso.FUENTE)
     fechas = plan.paso(TipoPaso.FILTRO_FECHAS)
     nubes = plan.paso(TipoPaso.FILTRO_NUBES)
@@ -63,4 +73,5 @@ def segmentos(plan: PlanCompilacion) -> list[Segmento]:
 
 
 def compilar(r: Receta) -> str:
+    exigir_producto_imagen(r)
     return unir(segmentos(construir_plan(r)))
