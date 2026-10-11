@@ -52,3 +52,12 @@ def test_descriptor_geojson_dict():
 def test_descriptor_tipo_desconocido_levanta():
     with pytest.raises(FuenteAOIError):
         desde_descriptor({"tipo": "kml"})
+
+
+def test_bbox_de_polygon_y_multipolygon():
+    from app.dominio.aoi import bbox_de
+    assert bbox_de(desde_bbox(-59.0, -35.0, -58.0, -34.0)) == (-59.0, -35.0, -58.0, -34.0)
+    multi = {"type": "MultiPolygon", "coordinates": [
+        [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]],
+        [[[5, 5], [6, 5], [6, 7], [5, 7], [5, 5]]]]}
+    assert bbox_de(multi) == (0.0, 0.0, 6.0, 7.0)

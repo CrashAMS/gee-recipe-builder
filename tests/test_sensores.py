@@ -28,3 +28,43 @@ def test_cuarenta_collection_ids_opticos():
 def test_ningun_sensor_sar():
     assert "COPERNICUS/S1_GRD" not in PERFILES
     assert "JAXA/ALOS/PALSAR-2/Level2_2/ScanSAR" not in PERFILES
+
+
+def test_todos_los_perfiles_tienen_escala_e_inicio():
+    for cid, p in PERFILES.items():
+        assert p.escala_nativa_m, cid
+        assert p.fecha_inicio, cid
+
+
+def test_s2_10m_y_propiedad_nubes():
+    for cid in ("COPERNICUS/S2", "COPERNICUS/S2_SR_HARMONIZED"):
+        assert PERFILES[cid].escala_nativa_m == 10
+        assert PERFILES[cid].prop_nubes == "CLOUDY_PIXEL_PERCENTAGE"
+    assert PERFILES["COPERNICUS/S2_SR"].fecha_inicio == "2017-03-28"
+
+
+def test_landsat_c2_30m_cloud_cover():
+    p = PERFILES["LANDSAT/LC08/C02/T1_L2"]
+    assert p.escala_nativa_m == 30 and p.prop_nubes == "CLOUD_COVER"
+
+
+def test_modis_escalas_sin_propiedad_nubes():
+    assert PERFILES["MODIS/061/MOD09GQ"].escala_nativa_m == 250
+    assert PERFILES["MODIS/061/MOD09GA"].escala_nativa_m == 500
+    assert PERFILES["MODIS/061/MCD43A4"].escala_nativa_m == 500
+    for cid, p in PERFILES.items():
+        if cid.startswith("MODIS/"):
+            assert p.prop_nubes is None, cid
+
+
+def test_fecha_fin_none_o_posterior_al_inicio():
+    for cid, p in PERFILES.items():
+        assert p.fecha_fin is None or p.fecha_fin >= p.fecha_inicio, cid
+
+
+def test_funciones_publicas_coinciden_con_perfiles():
+    from app.dominio import catalogo
+    for cid, p in PERFILES.items():
+        assert catalogo.escala_nativa(cid) == p.escala_nativa_m
+        assert catalogo.rango_fechas(cid) == (p.fecha_inicio, p.fecha_fin)
+        assert catalogo.propiedad_nubes(cid) == p.prop_nubes

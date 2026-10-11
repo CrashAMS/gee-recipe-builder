@@ -70,6 +70,11 @@ def desde_descriptor(descriptor: dict) -> dict:
     raise FuenteAOIError(f"descriptor de AOI no reconocido: tipo={tipo!r}")
 
 
+def bbox_de(geometria: dict) -> tuple[float, float, float, float]:
+    """GeoJSON geometry dict -> (minx, miny, maxx, maxy). Sin GEE (shapely .bounds)."""
+    return tuple(shape(geometria).bounds)
+
+
 class FuenteAOI:
     """Fachada de conveniencia — agrupa las funciones libres bajo un único nombre
     importable. Es sólo un namespace: no hay estado ni instancias, todo son
@@ -79,3 +84,4 @@ class FuenteAOI:
     desde_geojson_dict = staticmethod(desde_geojson_dict)
     desde_archivo = staticmethod(desde_archivo)
     desde_descriptor = staticmethod(desde_descriptor)
+    bbox_de = staticmethod(bbox_de)

@@ -18,6 +18,10 @@ class PerfilSensor:
     display_name: str
     bandas: dict[str, str]        # símbolo ASI -> nombre de banda GEE (N -> 'B8')
     soporta_mascara: bool         # de ee_extra/QA/clouds.py (tabla distinta, decisión F0)
+    escala_nativa_m: int | None = None   # resolución nativa en metros
+    fecha_inicio: str | None = None      # ISO yyyy-MM-dd, primer dato de la colección
+    fecha_fin: str | None = None         # ISO; None = activa hoy (o fin no verificado)
+    prop_nubes: str | None = None        # propiedad GEE de % nubes; None = sin propiedad (MODIS)
 
     @property
     def simbolos_disponibles(self) -> frozenset[str]:
@@ -75,8 +79,49 @@ _CON_MASCARA = frozenset({
 })
 
 
+# --- Escala nativa, rango de fechas y propiedad de nubes (tablas paralelas por familia) ---
+# fecha_fin None = activa hoy. Las colecciones deprecadas (Landsat C1, MODIS 006) dejan fin
+# None: un fin None nunca bloquea al usuario, uno inventado sí.   # verificar en catálogo GEE
+_ESCALA_FRAGMENTOS = (          # (fragmento del cid, escala m)
+    ("COPERNICUS/S2", 10), ("LANDSAT/", 30),
+    ("MOD09GQ", 250), ("MYD09GQ", 250), ("MOD09Q1", 250), ("MYD09Q1", 250),
+    ("MOD09GA", 500), ("MYD09GA", 500), ("MOD09A1", 500), ("MYD09A1", 500),
+    ("MCD43A4", 500),
+)
+_PROP_NUBES = {"COPERNICUS/S2": "CLOUDY_PIXEL_PERCENTAGE", "LANDSAT/": "CLOUD_COVER"}
+
+_INICIO_EXACTO = {              # cid exacto -> inicio ISO
+    "COPERNICUS/S2": "2015-06-23", "COPERNICUS/S2_HARMONIZED": "2015-06-23",
+    "COPERNICUS/S2_SR": "2017-03-28", "COPERNICUS/S2_SR_HARMONIZED": "2017-03-28",
+}
+_INICIO_LANDSAT = {"LC09": "2021-10-31", "LC08": "2013-03-18", "LE07": "1999-01-01",
+                   "LT05": "1984-03-16", "LT04": "1982-08-22"}
+_FIN_LANDSAT = {"LT05": "2012-05-05", "LT04": "1993-12-14"}   # verificar en catálogo GEE
+_INICIO_MODIS = {"MOD09GQ": "2000-02-24", "MYD09GQ": "2002-07-04",
+                 "MOD09Q1": "2000-02-18", "MYD09Q1": "2002-07-04",
+                 "MOD09GA": "2000-02-24", "MYD09GA": "2002-07-04",
+                 "MOD09A1": "2000-02-18", "MYD09A1": "2002-07-04",
+                 "MCD43A4": "2000-02-16"}
+
+
+def _fechas(cid: str) -> tuple[str | None, str | None]:
+    if cid in _INICIO_EXACTO:
+        return _INICIO_EXACTO[cid], None
+    if cid.startswith("LANDSAT/"):
+        sat = cid.split("/")[1]
+        return _INICIO_LANDSAT.get(sat), _FIN_LANDSAT.get(sat)
+    if cid.startswith("MODIS/"):
+        return _INICIO_MODIS.get(cid.split("/")[2]), None
+    return None, None
+
+
 def _perfil(cid: str, nombre: str, bandas: dict[str, str]) -> PerfilSensor:
-    return PerfilSensor(cid, nombre, bandas, soporta_mascara=cid in _CON_MASCARA)
+    ini, fin = _fechas(cid)
+    escala = next((v for k, v in _ESCALA_FRAGMENTOS if k in cid), None)
+    prop = next((v for k, v in _PROP_NUBES.items() if cid.startswith(k)), None)
+    return PerfilSensor(cid, nombre, bandas, soporta_mascara=cid in _CON_MASCARA,
+                        escala_nativa_m=escala, fecha_inicio=ini, fecha_fin=fin,
+                        prop_nubes=prop)
 
 
 PERFILES: dict[str, PerfilSensor] = {}

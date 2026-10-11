@@ -8,9 +8,10 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Signal, QDate
 
 from app.dominio import catalogo
-from app.dominio.aoi import FuenteAOI
+from app.dominio.aoi import FuenteAOI, bbox_de
+from app.dominio.estimador import estimar_tamano_descarga, texto_estimacion
 from app.dominio.errores import FuenteAOIError
-from app.dominio.receta import Receta
+from app.dominio.receta import Receta, Salida
 from app.ui.widget_parametros import PanelParametros
 from app.ui.widget_aoi import SelectorAOI
 
@@ -32,6 +33,8 @@ class PanelFormulario(QWidget):
         super().__init__(parent)
         raiz = QVBoxLayout(self)
         self._error_aoi: str | None = None
+        self._escala_manual = False          # True solo si el usuario editó la escala
+        self._aplicando_limites = False
 
         # --- Índice (primera decisión, index-first) ---
         caja_indice = QGroupBox("1 · Índice")
@@ -97,6 +100,9 @@ class PanelFormulario(QWidget):
         f_r.addRow(self.chk_mascara)
         f_r.addRow("Composición", self.combo_comp)
         f_r.addRow("Escala", self.spin_escala)
+        self.lbl_estimacion = QLabel()
+        self.lbl_estimacion.setWordWrap(True)
+        f_r.addRow(self.lbl_estimacion)
         f_r.addRow("Salida", self.combo_salida)
         raiz.addWidget(caja_resto)
         raiz.addStretch()
@@ -104,6 +110,9 @@ class PanelFormulario(QWidget):
         # --- Wiring ---
         self.combo_indice.currentIndexChanged.connect(self._on_indice)
         self.combo_sensor.currentIndexChanged.connect(self._on_sensor)
+        self.spin_escala.valueChanged.connect(self._on_escala_editada)
+        self.fecha_inicio.dateChanged.connect(self._aplicar_limites_fechas)
+        self.fecha_fin.dateChanged.connect(self._aplicar_limites_fechas)
         for sig in (
             self.panel_params.cambiado, self.selector_aoi.cambiado,
             self.fecha_inicio.dateChanged, self.fecha_fin.dateChanged,
@@ -148,7 +157,56 @@ class PanelFormulario(QWidget):
             )
         else:
             self.chk_mascara.setToolTip("")
+        nativa = catalogo.escala_nativa(sen.collection_id)
+        if nativa is not None and not self._escala_manual:
+            self.spin_escala.blockSignals(True)   # set programático: ni cambiado extra ni flag manual
+            try:
+                self.spin_escala.setValue(nativa)
+            finally:
+                self.spin_escala.blockSignals(False)
+        self._aplicar_limites_fechas()
         self.cambiado.emit()
+
+    def _on_escala_editada(self) -> None:
+        self._escala_manual = True
+
+    def _aplicar_limites_fechas(self) -> None:
+        """Limita ambos calendarios al rango del sensor y fuerza inicio <= fin con
+        límites cruzados (Qt clampea; no se hace setDate). No emite `cambiado`."""
+        if self._aplicando_limites:
+            return
+        sen = self._sensor_actual()
+        if sen is None:
+            return
+        ini_s, fin_s = catalogo.rango_fechas(sen.collection_id)
+        qmin = QDate.fromString(ini_s, "yyyy-MM-dd") if ini_s else QDate(1970, 1, 1)
+        qmax = QDate.fromString(fin_s, "yyyy-MM-dd") if fin_s else QDate.currentDate()
+        self._aplicando_limites = True
+        self.fecha_inicio.blockSignals(True)
+        self.fecha_fin.blockSignals(True)
+        try:
+            for de in (self.fecha_inicio, self.fecha_fin):
+                de.setDateRange(qmin, qmax)
+            self.fecha_inicio.setMaximumDate(self.fecha_fin.date())
+            self.fecha_fin.setMinimumDate(self.fecha_inicio.date())
+        finally:
+            self.fecha_inicio.blockSignals(False)
+            self.fecha_fin.blockSignals(False)
+            self._aplicando_limites = False
+
+    def actualizar_estimacion(self, receta: Receta | None) -> None:
+        """Texto de tamaño estimado bajo la escala; vacío si no hay receta/geometría válida."""
+        if receta is None:
+            self.lbl_estimacion.setText("")
+            return
+        try:
+            est = estimar_tamano_descarga(bbox_de(receta.geometria), receta.escala,
+                                          n_bandas=1, dtype="float32")
+        except Exception:  # noqa: BLE001 — geometría vacía/inválida: etiqueta vacía, nunca levanta
+            self.lbl_estimacion.setText("")
+            return
+        self.lbl_estimacion.setText(
+            texto_estimacion(est, descarga_directa=receta.salida == Salida.DESCARGA))
 
     def receta_actual(self) -> Receta | None:
         """Arma la Receta desde el estado del form, o None si falta algo obligatorio

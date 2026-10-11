@@ -53,3 +53,12 @@ def estimar_tamano_descarga(bbox_lonlat: tuple[float, float, float, float],
         ancho_px, alto_px, n_bandas, bytes_est,
         excede_bytes=bytes_est > LIMITE_BYTES,
         excede_lado=max(ancho_px, alto_px) > LIMITE_LADO_PX)
+
+
+def texto_estimacion(est: EstimacionDescarga, descarga_directa: bool) -> str:
+    """Texto de la etiqueta en vivo: '≈ W×H px, N MB' (+ aviso solo con descarga directa)."""
+    mb = est.bytes_estimados / (1024 * 1024)
+    txt = f"≈ {est.ancho_px}×{est.alto_px} px, {mb:.1f} MB"
+    if est.excede and descarga_directa:
+        txt += " — excede la descarga directa, usá Drive"
+    return txt

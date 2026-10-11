@@ -17,3 +17,19 @@ def sensores_para(indice: Indice | str) -> list[PerfilSensor]:
 def soporta_mascara(collection_id: str) -> bool:
     """True si ese collection ID tiene maskClouds disponible ([HALLAZGO-2.4])."""
     return collection_id in sensores_con_mascara()
+
+
+def escala_nativa(collection_id: str) -> int | None:
+    """Escala nativa (m) del sensor, o None si no hay dato."""
+    return PERFILES[collection_id].escala_nativa_m
+
+
+def rango_fechas(collection_id: str) -> tuple[str | None, str | None]:
+    """(inicio, fin) ISO del sensor; fin None = activa hoy."""
+    p = PERFILES[collection_id]
+    return p.fecha_inicio, p.fecha_fin
+
+
+def propiedad_nubes(collection_id: str) -> str | None:
+    """Propiedad GEE de % nubes de la colección; None si no tiene (MODIS)."""
+    return PERFILES[collection_id].prop_nubes

@@ -29,3 +29,13 @@ def test_motivo_ok_cuando_no_excede():
 def test_motivo_excede_bytes_y_lado():
     e = estimar_tamano_descarga((-60.0, -35.0, -58.0, -33.0), escala_m=1, n_bandas=3)
     assert e.motivo == "excede_bytes_y_lado"
+
+
+def test_texto_estimacion_ok_y_excede():
+    from app.dominio.estimador import texto_estimacion
+    ok = estimar_tamano_descarga((-58.5, -34.6, -58.4, -34.5), escala_m=10, n_bandas=1)
+    t = texto_estimacion(ok, descarga_directa=True)
+    assert t.startswith("≈ ") and "MB" in t and "Drive" not in t
+    grande = estimar_tamano_descarga((-60.0, -35.0, -58.0, -33.0), escala_m=10, n_bandas=1)
+    assert "usá Drive" in texto_estimacion(grande, descarga_directa=True)
+    assert "usá Drive" not in texto_estimacion(grande, descarga_directa=False)

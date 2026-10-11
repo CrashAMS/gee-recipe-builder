@@ -22,6 +22,7 @@ from app.ui.workers import WorkerConstruirImagenExport, WorkerDescarga, WorkerPr
 # Debounce del auto-refresh de preview al cambiar la receta (decisión #6 F3b):
 # regenerar mapid en cada cambio, pero sin saturar GEE en cada tecla/spin.
 _DEBOUNCE_PREVIEW_MS = 800
+_SIN_ARMAR = object()  # centinela: _actualizar_script() sin argumento arma su propia receta
 
 
 class VentanaPrincipal(QMainWindow):
@@ -81,9 +82,9 @@ class VentanaPrincipal(QMainWindow):
         self.setCentralWidget(splitter)
 
         # --- Wiring de actualización en vivo ---
-        self.form.cambiado.connect(self._actualizar_script)
+        self.form.cambiado.connect(self._on_form_cambiado)
         self.visor.dialecto_cambiado.connect(self._actualizar_script)
-        self._actualizar_script()
+        self._on_form_cambiado()
 
         # --- Wiring AOI dibujada en el mapa → SelectorAOI (F3b) ---
         self._mapa.aoi_dibujada.connect(self.form.selector_aoi.set_geometria_dibujada)
@@ -102,8 +103,15 @@ class VentanaPrincipal(QMainWindow):
 
         print("VentanaPrincipal lista — form poblado, visor inicializado, mapa embebido")
 
-    def _actualizar_script(self) -> None:
+    def _on_form_cambiado(self) -> None:
+        """Slot central: arma la receta una sola vez y la reparte a script y estimación."""
         receta = self.form.receta_actual()
+        self._actualizar_script(receta)
+        self.form.actualizar_estimacion(receta)
+
+    def _actualizar_script(self, receta=_SIN_ARMAR) -> None:
+        if receta is _SIN_ARMAR:
+            receta = self.form.receta_actual()
         if receta is None:
             error_aoi = self.form.ultimo_error_aoi()
             if error_aoi:
